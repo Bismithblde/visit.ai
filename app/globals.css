@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fbfaf7;
+  --foreground: #18201d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid #dce9e0;
+  border-top-color: #1c241f;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.train-track {
+  position: relative;
+  height: 54px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid #dbe6df;
+  background:
+    linear-gradient(90deg, transparent 0 20px, rgba(127, 200, 169, 0.22) 20px 22px, transparent 22px 42px),
+    #fffdf8;
+  background-size: 42px 100%;
+}
+
+.train-track::before {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  left: 18px;
+  height: 2px;
+  content: "";
+  background: #a8b7af;
+}
+
+.train {
+  position: absolute;
+  top: 13px;
+  left: 22px;
+  width: 82px;
+  height: 24px;
+  border-radius: 18px 22px 10px 10px;
+  background: #1c241f;
+  box-shadow:
+    34px 0 0 -12px #7fc8a9,
+    92px 0 0 -3px #dfeaff;
+}
+
+.train::before,
+.train::after {
+  position: absolute;
+  bottom: -7px;
+  width: 10px;
+  height: 10px;
+  content: "";
+  border: 2px solid #1c241f;
+  border-radius: 50%;
+  background: #fffdf8;
+}
+
+.train::before {
+  left: 14px;
+}
+
+.train::after {
+  right: 12px;
+}
+
+.train.moving {
+  animation: train-run 2.2s cubic-bezier(0.76, 0, 0.24, 1) infinite;
+}
+
+@keyframes train-run {
+  0% {
+    transform: translateX(-125px);
+  }
+
+  62% {
+    transform: translateX(calc(100vw - 260px));
+  }
+
+  100% {
+    transform: translateX(calc(100vw - 260px));
+  }
+}
