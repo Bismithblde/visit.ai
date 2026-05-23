@@ -1,6 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import Calendar from "react-calendar";
+import "react-calendar/dist/Calendar.css";
 
 const processSteps = [
   "Looking up hotels",
@@ -78,10 +80,22 @@ const baseTravel = [
 ];
 
 const tripDates = ["1/2/2026", "1/3/2026", "1/4/2026"];
+type CalendarValuePiece = Date | null;
+type CalendarValue =
+  | CalendarValuePiece
+  | [CalendarValuePiece, CalendarValuePiece];
+
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  month: "short",
+});
 
 export default function Page() {
   const [destination, setDestination] = useState("");
   const [dates, setDates] = useState("");
+  const [personalization, setPersonalization] = useState("");
+  const [calendarValue, setCalendarValue] = useState<CalendarValue>(null);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [budget, setBudget] = useState("");
   const [groupSize, setGroupSize] = useState("");
   const [status, setStatus] = useState<"idle" | "processing" | "ready">("idle");
@@ -97,8 +111,10 @@ export default function Page() {
     activities[1].id,
   ]);
   const [tripMade, setTripMade] = useState(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
 
-  const selectedHotelItem = hotels.find((hotel) => hotel.id === selectedHotel) ?? hotels[0];
+  const selectedHotelItem =
+    hotels.find((hotel) => hotel.id === selectedHotel) ?? hotels[0];
   const selectedRestaurantItems = restaurants.filter((restaurant) =>
     selectedRestaurants.includes(restaurant.id),
   );
@@ -108,9 +124,18 @@ export default function Page() {
 
   const totals = useMemo(() => {
     const hotelTotal = selectedHotelItem.cost;
-    const foodTotal = selectedRestaurantItems.reduce((sum, item) => sum + item.cost, 0);
-    const activityTotal = selectedActivityItems.reduce((sum, item) => sum + item.cost, 0);
-    const travelMinutes = 14 + selectedRestaurantItems.length * 11 + selectedActivityItems.length * 16;
+    const foodTotal = selectedRestaurantItems.reduce(
+      (sum, item) => sum + item.cost,
+      0,
+    );
+    const activityTotal = selectedActivityItems.reduce(
+      (sum, item) => sum + item.cost,
+      0,
+    );
+    const travelMinutes =
+      14 +
+      selectedRestaurantItems.length * 11 +
+      selectedActivityItems.length * 16;
     const transitTotal = Math.max(48, Math.round(travelMinutes * 1.8));
 
     return {
@@ -141,6 +166,34 @@ export default function Page() {
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [status]);
 
+  useEffect(() => {
+    if (!calendarOpen) {
+      return;
+    }
+
+    function closeCalendar(event: MouseEvent) {
+      if (
+        calendarRef.current &&
+        event.target instanceof Node &&
+        !calendarRef.current.contains(event.target)
+      ) {
+        setCalendarOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", closeCalendar);
+    return () => window.removeEventListener("mousedown", closeCalendar);
+  }, [calendarOpen]);
+
+  function updateDates(nextValue: CalendarValue) {
+    setCalendarValue(nextValue);
+    setDates(formatCalendarValue(nextValue));
+
+    if (Array.isArray(nextValue) && nextValue[0] && nextValue[1]) {
+      setCalendarOpen(false);
+    }
+  }
+
   function submitFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmittedDestination(destination);
@@ -152,14 +205,18 @@ export default function Page() {
   function toggleRestaurant(id: string) {
     setTripMade(false);
     setSelectedRestaurants((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
     );
   }
 
   function toggleActivity(id: string) {
     setTripMade(false);
     setSelectedActivities((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
     );
   }
 
@@ -168,11 +225,28 @@ export default function Page() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <form
           onSubmit={submitFilters}
-          className="grid w-full gap-3 rounded-[1.75rem] border border-[#e2e8df] bg-white/82 p-3 shadow-[0_22px_70px_rgba(82,95,86,0.14)] backdrop-blur md:grid-cols-[1fr_0.9fr_0.7fr_1.2fr_auto]"
+          className="grid w-full gap-3 rounded-[1.75rem] border border-[#e2e8df] bg-white/82 p-3 shadow-[0_22px_70px_rgba(82,95,86,0.14)] backdrop-blur md:grid-cols-[1fr_0.9fr_0.7fr_1.2fr]"
         >
-          <Field label="Dates" value={dates} onChange={setDates} placeholder="Jan 2 - Jan 4" />
-          <Field label="Budget" value={budget} onChange={setBudget} placeholder="$2,400" />
-          <Field label="Group size" value={groupSize} onChange={setGroupSize} placeholder="4" />
+          <CalendarField
+            calendarOpen={calendarOpen}
+            onChange={updateDates}
+            onOpenChange={setCalendarOpen}
+            refObject={calendarRef}
+            value={calendarValue}
+            valueLabel={dates}
+          />
+          <Field
+            label="Budget"
+            value={budget}
+            onChange={setBudget}
+            placeholder="$2,400"
+          />
+          <Field
+            label="Group size"
+            value={groupSize}
+            onChange={setGroupSize}
+            placeholder="4"
+          />
           <Field
             label="Destination"
             value={destination}
@@ -180,12 +254,39 @@ export default function Page() {
             placeholder="Search a city"
             type="search"
           />
-          <button
-            type="submit"
-            className="min-h-16 rounded-[1.1rem] border border-[#1c241f] bg-[#1c241f] px-6 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(28,36,31,0.22)] transition hover:-translate-y-0.5 hover:bg-[#29342e] focus:outline-none focus:ring-4 focus:ring-[#b8dfce]"
+          <div
+            aria-label="Trip personalization chat"
+            className="flex min-h-16 w-full items-center gap-3 rounded-[1.35rem] bg-[#fffdf8] px-4 py-3 ring-1 ring-[#e2e8df] transition focus-within:ring-[#9fc7b5] md:col-span-4"
           >
-            Request plan
-          </button>
+            <input
+              className="min-w-0 flex-1 bg-transparent text-base font-medium text-[#202923] outline-none placeholder:text-[#8b9991]"
+              onChange={(event) => setPersonalization(event.target.value)}
+              placeholder="Further personalize your trip with any concerns or preferences."
+              type="text"
+              value={personalization}
+            />
+            <button
+              aria-label="Submit trip preferences"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-[0.95rem] bg-[#1c241f] text-white shadow-[0_10px_24px_rgba(28,36,31,0.18)] transition hover:-translate-y-0.5 hover:bg-[#29342e] focus:outline-none focus:ring-4 focus:ring-[#b8dfce] active:translate-y-0"
+              title="Send"
+              type="submit"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  d="m5 12 14-7-4 14-3-6-7-1Z"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                />
+              </svg>
+            </button>
+          </div>
         </form>
 
         {status === "processing" && (
@@ -262,27 +363,46 @@ export default function Page() {
             {tripMade && (
               <div className="grid gap-6 border-t border-[#e2e8df] pt-6 lg:grid-cols-[0.72fr_1.28fr]">
                 <aside className="rounded-[1.35rem] border border-[#e3e9e2] bg-white p-5 shadow-sm">
-                  <h3 className="text-2xl font-semibold text-[#202923]">Totals</h3>
+                  <h3 className="text-2xl font-semibold text-[#202923]">
+                    Totals
+                  </h3>
                   <p className="mt-7 text-5xl font-semibold text-[#202923]">
                     ${totals.totalBudget.toLocaleString()}
                   </p>
                   <div className="mt-8 grid gap-3 text-sm font-medium text-[#4f5b55]">
                     <LineItem label="Hotel" value={`$${totals.hotelTotal}`} />
                     <LineItem label="Food" value={`$${totals.foodTotal}`} />
-                    <LineItem label="Activities" value={`$${totals.activityTotal}`} />
-                    <LineItem label="Transit" value={`$${totals.transitTotal}`} />
-                    <LineItem label="Travel time" value={`${totals.travelMinutes} min`} />
+                    <LineItem
+                      label="Activities"
+                      value={`$${totals.activityTotal}`}
+                    />
+                    <LineItem
+                      label="Transit"
+                      value={`$${totals.transitTotal}`}
+                    />
+                    <LineItem
+                      label="Travel time"
+                      value={`${totals.travelMinutes} min`}
+                    />
                   </div>
                 </aside>
 
                 <div className="space-y-3">
                   {tripDates.map((date, index) => (
                     <DayBreakdown
-                      activity={selectedActivityItems[index % Math.max(selectedActivityItems.length, 1)]}
+                      activity={
+                        selectedActivityItems[
+                          index % Math.max(selectedActivityItems.length, 1)
+                        ]
+                      }
                       date={date}
                       hotel={selectedHotelItem}
                       key={date}
-                      restaurant={selectedRestaurantItems[index % Math.max(selectedRestaurantItems.length, 1)]}
+                      restaurant={
+                        selectedRestaurantItems[
+                          index % Math.max(selectedRestaurantItems.length, 1)
+                        ]
+                      }
                       travel={baseTravel[index] ?? baseTravel[0]}
                     />
                   ))}
@@ -304,10 +424,15 @@ function SelectorGroup({
   title: string;
 }) {
   return (
-    <details className="group rounded-[1.2rem] border border-[#e2e8df] bg-white shadow-sm" open>
+    <details
+      className="group rounded-[1.2rem] border border-[#e2e8df] bg-white shadow-sm"
+      open
+    >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-xl font-semibold text-[#202923] marker:hidden">
         <span>{title}</span>
-        <span className="text-sm font-semibold text-[#718077] transition group-open:rotate-180">v</span>
+        <span className="text-sm font-semibold text-[#718077] transition group-open:rotate-180">
+          v
+        </span>
       </summary>
       <div className="grid border-t border-[#eef2ed] p-3">{children}</div>
     </details>
@@ -338,7 +463,9 @@ function OptionRow({
         type={type}
       />
       <span>
-        <span className="block text-base font-semibold text-[#202923]">{name}</span>
+        <span className="block text-base font-semibold text-[#202923]">
+          {name}
+        </span>
         <span className="mt-1 block text-sm text-[#66736c]">{intro}</span>
       </span>
       <span className="text-sm font-semibold text-[#202923]">{cost}</span>
@@ -387,6 +514,80 @@ function DayBreakdown({
       </ol>
     </article>
   );
+}
+
+function CalendarField({
+  calendarOpen,
+  onChange,
+  onOpenChange,
+  refObject,
+  value,
+  valueLabel,
+}: {
+  calendarOpen: boolean;
+  onChange: (value: CalendarValue) => void;
+  onOpenChange: (open: boolean) => void;
+  refObject: React.RefObject<HTMLDivElement | null>;
+  value: CalendarValue;
+  valueLabel: string;
+}) {
+  return (
+    <div className="relative" ref={refObject}>
+      <button
+        aria-expanded={calendarOpen}
+        aria-haspopup="dialog"
+        className="grid min-h-16 w-full rounded-[1.1rem] border border-[#e6ebe5] bg-[#fbfaf7] px-4 py-3 text-left transition hover:border-[#bfd8cc] hover:bg-white focus:outline-none focus:ring-4 focus:ring-[#b8dfce]"
+        onClick={() => onOpenChange(!calendarOpen)}
+        type="button"
+      >
+        <span className="block text-xs font-semibold uppercase tracking-[0.14em] text-[#6d7a73]">
+          Dates
+        </span>
+        <span className="mt-2 flex items-center justify-between gap-3 text-base font-semibold text-[#202923]">
+          <span>{valueLabel || "Select Dates"}</span>
+          <span aria-hidden="true" className="text-[#8ba196]">
+            +
+          </span>
+        </span>
+      </button>
+
+      {calendarOpen && (
+        <div
+          className="absolute left-0 top-[calc(100%+0.75rem)] z-30 w-[min(22rem,calc(100vw-2.5rem))] rounded-[1.35rem] bg-[#fffdf8] p-3 shadow-[0_24px_70px_rgba(41,52,46,0.18)]"
+          role="dialog"
+        >
+          <Calendar
+            calendarType="gregory"
+            className="trip-calendar"
+            minDate={new Date()}
+            next2Label={null}
+            onChange={onChange}
+            prev2Label={null}
+            selectRange
+            value={value}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatCalendarValue(value: CalendarValue) {
+  if (Array.isArray(value)) {
+    const [start, end] = value;
+
+    if (start && end) {
+      return `${dateFormatter.format(start)} - ${dateFormatter.format(end)}`;
+    }
+
+    if (start) {
+      return dateFormatter.format(start);
+    }
+
+    return "";
+  }
+
+  return value ? dateFormatter.format(value) : "";
 }
 
 function Field({

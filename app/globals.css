@@ -25,6 +25,136 @@ input {
   font: inherit;
 }
 
+.trip-calendar.react-calendar {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #202923;
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+  line-height: 1.2;
+}
+
+.trip-calendar .react-calendar__navigation {
+  min-height: 48px;
+  height: auto;
+  margin: 0 0 16px;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.trip-calendar .react-calendar__navigation button {
+  min-width: 42px;
+  min-height: 42px;
+  border-radius: 12px;
+  background: transparent;
+  color: #202923;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.trip-calendar .react-calendar__navigation button:disabled {
+  background: transparent;
+  color: #b8c2bc;
+}
+
+.trip-calendar .react-calendar__navigation button:enabled:hover,
+.trip-calendar .react-calendar__navigation button:enabled:focus {
+  background: #edf4ef;
+  color: #202923;
+}
+
+.trip-calendar .react-calendar__navigation button:enabled:active {
+  transform: translateY(1px);
+}
+
+.trip-calendar .react-calendar__navigation__label {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 0.9rem;
+  background: #f5f1e8;
+  color: #202923;
+  font-size: 0.98rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+.trip-calendar .react-calendar__navigation__label:enabled:hover,
+.trip-calendar .react-calendar__navigation__label:enabled:focus {
+  background: #efe8dc;
+}
+
+.trip-calendar .react-calendar__month-view__weekdays {
+  margin-bottom: 6px;
+  color: #6d7a73;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trip-calendar .react-calendar__month-view__weekdays abbr {
+  text-decoration: none;
+}
+
+.trip-calendar .react-calendar__tile {
+  min-height: 42px;
+  border-radius: 14px;
+  background: transparent;
+  color: #202923;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.trip-calendar .react-calendar__tile:disabled {
+  background: transparent;
+  color: #c4ccc6;
+}
+
+.trip-calendar .react-calendar__month-view__days__day--neighboringMonth {
+  color: #b2beb7;
+}
+
+.trip-calendar .react-calendar__tile:enabled:hover,
+.trip-calendar .react-calendar__tile:enabled:focus {
+  background: #e9f3ee;
+  color: #202923;
+}
+
+.trip-calendar .react-calendar__tile--now {
+  background: #f4f0e7;
+  color: #202923;
+}
+
+.trip-calendar .react-calendar__tile--active,
+.trip-calendar .react-calendar__tile--rangeStart,
+.trip-calendar .react-calendar__tile--rangeEnd {
+  background: #1c241f;
+  color: white;
+}
+
+.trip-calendar .react-calendar__tile--range {
+  background: #dcece4;
+  color: #202923;
+}
+
+.trip-calendar .react-calendar__tile--rangeStart,
+.trip-calendar .react-calendar__tile--rangeEnd {
+  box-shadow: 0 10px 20px rgba(28, 36, 31, 0.2);
+}
+
 .spinner {
   width: 34px;
   height: 34px;
@@ -47,7 +177,12 @@ input {
   border-radius: 999px;
   border: 1px solid #dbe6df;
   background:
-    linear-gradient(90deg, transparent 0 20px, rgba(127, 200, 169, 0.22) 20px 22px, transparent 22px 42px),
+    linear-gradient(
+      90deg,
+      transparent 0 20px,
+      rgba(127, 200, 169, 0.22) 20px 22px,
+      transparent 22px 42px
+    ),
     #fffdf8;
   background-size: 42px 100%;
 }
