@@ -5,9 +5,9 @@ import Calendar from "react-calendar";
 import "react-calendar/dist/Calendar.css";
 
 const processSteps = [
-  "Looking up hotels",
-  "Grepping viral restaurants",
-  "Balancing for budget",
+  "Searching local activity sources",
+  "Reading source details",
+  "Ranking activity candidates",
 ];
 
 const hotels = [
@@ -31,45 +31,169 @@ const hotels = [
   },
 ];
 
-const restaurants = [
+interface Coordinates {
+  latitude: number;
+  longitude: number;
+}
+
+interface ActivityOption {
+  id: string;
+  name: string;
+  description: string;
+  time: Date | null;
+  location: Coordinates | null;
+  price: number;
+  priceLabel: string;
+  timeLabel: string;
+  locationLabel: string;
+  tags: string[];
+  sourceUrls: string[];
+  confidence: number | null;
+  needsVerification: boolean;
+}
+
+interface ActivityCandidate {
+  name: string;
+  description: string;
+  locationHint: string;
+  tags: string[];
+  sourceUrls: string[];
+  confidence: number;
+  needsVerification: true;
+}
+
+interface DiscoveryResponse {
+  candidates: ActivityCandidate[];
+}
+
+interface RestaurantOption {
+  id: string;
+  name: string;
+  description: string;
+  averagePrice: number;
+  cuisine: string;
+}
+
+const restaurants: RestaurantOption[] = [
   {
     id: "mira",
     name: "Mira Counter",
-    intro: "Viral seafood bar",
-    cost: 188,
+    description: "Viral seafood bar with counter seating and a raw menu.",
+    averagePrice: 188,
+    cuisine: "Seafood",
   },
   {
     id: "nori",
     name: "Nori & Clay",
-    intro: "Open-fire small plates",
-    cost: 244,
+    description: "Open-fire small plates built around charcoal and seasonal rice.",
+    averagePrice: 244,
+    cuisine: "Japanese",
   },
   {
     id: "sol",
     name: "Cafe Sol",
-    intro: "Brunch queue favorite",
-    cost: 132,
+    description: "Brunch queue favorite with bright pastries and strong coffee.",
+    averagePrice: 132,
+    cuisine: "Cafe",
+  },
+  {
+    id: "lumen",
+    name: "Lumen Table",
+    description: "All-day neighborhood dining with local vegetables and wine.",
+    averagePrice: 164,
+    cuisine: "Modern European",
+  },
+  {
+    id: "puebla",
+    name: "Puebla House",
+    description: "Family-style plates, masa snacks, and late-night desserts.",
+    averagePrice: 118,
+    cuisine: "Mexican",
+  },
+  {
+    id: "fig",
+    name: "Fig & Laurel",
+    description: "Quiet breakfast room with mezze, flatbreads, and tea service.",
+    averagePrice: 96,
+    cuisine: "Mediterranean",
   },
 ];
 
-const activities = [
+const activities: ActivityOption[] = [
   {
     id: "tile",
     name: "Tile museum",
-    intro: "90 min",
-    cost: 96,
+    description: "A 90-minute guided collection walk through ceramic history.",
+    time: new Date("2026-01-02T10:00:00"),
+    location: { latitude: 38.7139, longitude: -9.1394 },
+    price: 96,
+    priceLabel: "$96",
+    timeLabel: "10:00 AM",
+    locationLabel: "38.7139, -9.1394",
+    tags: ["museum", "guided"],
+    sourceUrls: [],
+    confidence: null,
+    needsVerification: false,
   },
   {
     id: "sail",
     name: "Sunset sail",
-    intro: "2 hr",
-    cost: 352,
+    description: "A two-hour private harbor route timed for golden hour.",
+    time: new Date("2026-01-02T17:30:00"),
+    location: { latitude: 38.6928, longitude: -9.2158 },
+    price: 352,
+    priceLabel: "$352",
+    timeLabel: "5:30 PM",
+    locationLabel: "38.6928, -9.2158",
+    tags: ["waterfront", "private"],
+    sourceUrls: [],
+    confidence: null,
+    needsVerification: false,
   },
   {
     id: "market",
     name: "Market crawl",
-    intro: "3 stops",
-    cost: 184,
+    description: "Three-stop tasting walk through produce, pastries, and seafood.",
+    time: new Date("2026-01-03T11:00:00"),
+    location: { latitude: 38.7078, longitude: -9.1466 },
+    price: 184,
+    priceLabel: "$184",
+    timeLabel: "11:00 AM",
+    locationLabel: "38.7078, -9.1466",
+    tags: ["food", "walking"],
+    sourceUrls: [],
+    confidence: null,
+    needsVerification: false,
+  },
+  {
+    id: "atelier",
+    name: "Design atelier",
+    description: "Studio visit with a maker-led workshop and a small keepsake.",
+    time: new Date("2026-01-04T14:00:00"),
+    location: { latitude: 38.7167, longitude: -9.1536 },
+    price: 128,
+    priceLabel: "$128",
+    timeLabel: "2:00 PM",
+    locationLabel: "38.7167, -9.1536",
+    tags: ["design", "workshop"],
+    sourceUrls: [],
+    confidence: null,
+    needsVerification: false,
+  },
+  {
+    id: "garden",
+    name: "Botanical garden",
+    description: "Self-paced garden circuit with shaded paths and overlooks.",
+    time: new Date("2026-01-05T09:30:00"),
+    location: { latitude: 38.7211, longitude: -9.1489 },
+    price: 42,
+    priceLabel: "$42",
+    timeLabel: "9:30 AM",
+    locationLabel: "38.7211, -9.1489",
+    tags: ["garden", "self-paced"],
+    sourceUrls: [],
+    confidence: null,
+    needsVerification: false,
   },
 ];
 
@@ -79,11 +203,11 @@ const baseTravel = [
   ["Tile museum", "Sunset sail", 26],
 ];
 
-const tripDates = ["1/2/2026", "1/3/2026", "1/4/2026"];
 type CalendarValuePiece = Date | null;
 type CalendarValue =
   | CalendarValuePiece
   | [CalendarValuePiece, CalendarValuePiece];
+type MealName = "Breakfast" | "Lunch" | "Dinner";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
@@ -101,14 +225,20 @@ export default function Page() {
   const [status, setStatus] = useState<"idle" | "processing" | "ready">("idle");
   const [activeStep, setActiveStep] = useState(0);
   const [submittedDestination, setSubmittedDestination] = useState("");
+  const [formError, setFormError] = useState("");
+  const [activityOptions, setActivityOptions] = useState<ActivityOption[]>(activities);
+  const [hasDiscoveredActivities, setHasDiscoveredActivities] = useState(false);
   const [selectedHotel, setSelectedHotel] = useState(hotels[0].id);
   const [selectedRestaurants, setSelectedRestaurants] = useState([
     restaurants[0].id,
     restaurants[2].id,
+    restaurants[3].id,
+    restaurants[5].id,
   ]);
   const [selectedActivities, setSelectedActivities] = useState([
     activities[0].id,
     activities[1].id,
+    activities[2].id,
   ]);
   const [tripMade, setTripMade] = useState(false);
   const calendarRef = useRef<HTMLDivElement>(null);
@@ -118,18 +248,33 @@ export default function Page() {
   const selectedRestaurantItems = restaurants.filter((restaurant) =>
     selectedRestaurants.includes(restaurant.id),
   );
-  const selectedActivityItems = activities.filter((activity) =>
+  const selectedActivityItems = activityOptions.filter((activity) =>
     selectedActivities.includes(activity.id),
+  );
+  const tripDays = useMemo(() => getTripDays(calendarValue), [calendarValue]);
+  const tripDayLabels = useMemo(
+    () => tripDays.map((date) => formatFullDate(date)),
+    [tripDays],
+  );
+  const requestedActivityCount = tripDayLabels.length;
+  const requestedRestaurantCount = requestedActivityCount * 3;
+  const mealPlan = useMemo(
+    () => buildMealPlan(tripDayLabels, selectedRestaurantItems),
+    [selectedRestaurantItems, tripDayLabels],
+  );
+  const activityPlan = useMemo(
+    () => buildActivityPlan(tripDayLabels, selectedActivityItems),
+    [selectedActivityItems, tripDayLabels],
   );
 
   const totals = useMemo(() => {
     const hotelTotal = selectedHotelItem.cost;
-    const foodTotal = selectedRestaurantItems.reduce(
-      (sum, item) => sum + item.cost,
+    const foodTotal = mealPlan.reduce(
+      (sum, item) => sum + (item.restaurant?.averagePrice ?? 0),
       0,
     );
-    const activityTotal = selectedActivityItems.reduce(
-      (sum, item) => sum + item.cost,
+    const activityTotal = activityPlan.reduce(
+      (sum, item) => sum + (item.activity?.price ?? 0),
       0,
     );
     const travelMinutes =
@@ -146,7 +291,13 @@ export default function Page() {
       transitTotal,
       travelMinutes,
     };
-  }, [selectedActivityItems, selectedHotelItem, selectedRestaurantItems]);
+  }, [
+    mealPlan,
+    activityPlan,
+    selectedHotelItem,
+    selectedActivityItems.length,
+    selectedRestaurantItems,
+  ]);
 
   const title = useMemo(() => {
     return `Recommendations for ${submittedDestination || "your trip"}`;
@@ -160,7 +311,6 @@ export default function Page() {
     const timers = [
       window.setTimeout(() => setActiveStep(1), 850),
       window.setTimeout(() => setActiveStep(2), 1700),
-      window.setTimeout(() => setStatus("ready"), 2700),
     ];
 
     return () => timers.forEach((timer) => window.clearTimeout(timer));
@@ -194,12 +344,70 @@ export default function Page() {
     }
   }
 
-  function submitFilters(event: FormEvent<HTMLFormElement>) {
+  async function submitFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmittedDestination(destination);
+
+    const location = destination.trim();
+    const parsedGroupSize = Number(groupSize);
+
+    if (!location) {
+      setFormError("Destination is required.");
+      return;
+    }
+
+    if (
+      !Number.isInteger(parsedGroupSize) ||
+      parsedGroupSize < 1 ||
+      parsedGroupSize > 50
+    ) {
+      setFormError("Group size must be an integer between 1 and 50.");
+      return;
+    }
+
+    setSubmittedDestination(location);
+    setSelectedActivities([]);
+    setSelectedRestaurants(selectByCount(restaurants, requestedRestaurantCount));
     setActiveStep(0);
+    setFormError("");
     setTripMade(false);
     setStatus("processing");
+
+    try {
+      const response = await fetch("/api/activities/discover", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          location,
+          groupSize: parsedGroupSize,
+          budget: "unknown",
+          preferences: personalization,
+          searchMode: "balanced",
+        }),
+      });
+
+      const body = (await response.json()) as DiscoveryResponse | { error?: string };
+
+      if (!response.ok) {
+        throw new Error(
+          "error" in body && body.error ? body.error : "Activity discovery failed.",
+        );
+      }
+
+      if (!isDiscoveryResponse(body)) {
+        throw new Error("Activity discovery returned an unexpected response.");
+      }
+
+      setActivityOptions(mapActivityCandidates(body.candidates));
+      setHasDiscoveredActivities(true);
+      setStatus("ready");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Activity discovery failed.";
+      setFormError(message);
+      setStatus(hasDiscoveredActivities ? "ready" : "idle");
+    }
   }
 
   function toggleRestaurant(id: string) {
@@ -289,6 +497,15 @@ export default function Page() {
           </div>
         </form>
 
+        {formError && (
+          <p
+            className="rounded-[1rem] border border-[#f0c9bd] bg-[#fff5f1] px-4 py-3 text-sm font-semibold text-[#9b3d24]"
+            role="alert"
+          >
+            {formError}
+          </p>
+        )}
+
         {status === "processing" && (
           <section className="flex min-h-40 flex-col items-center justify-center gap-5 text-center">
             <span className="spinner" aria-hidden="true" />
@@ -331,12 +548,14 @@ export default function Page() {
                 ))}
               </SelectorGroup>
 
-              <SelectorGroup title="Restaurants">
+              <SelectorGroup
+                title={`Restaurants (${requestedRestaurantCount} meal slots)`}
+              >
                 {restaurants.map((restaurant) => (
                   <OptionRow
                     checked={selectedRestaurants.includes(restaurant.id)}
-                    cost={`$${restaurant.cost}`}
-                    intro={restaurant.intro}
+                    cost={`$${restaurant.averagePrice} avg`}
+                    intro={`${restaurant.cuisine} - ${restaurant.description}`}
                     key={restaurant.id}
                     name={restaurant.name}
                     onChange={() => toggleRestaurant(restaurant.id)}
@@ -345,18 +564,24 @@ export default function Page() {
                 ))}
               </SelectorGroup>
 
-              <SelectorGroup title="Activities">
-                {activities.map((activity) => (
-                  <OptionRow
-                    checked={selectedActivities.includes(activity.id)}
-                    cost={`$${activity.cost}`}
-                    intro={activity.intro}
-                    key={activity.id}
-                    name={activity.name}
-                    onChange={() => toggleActivity(activity.id)}
-                    type="checkbox"
-                  />
-                ))}
+              <SelectorGroup
+                title={`Activities (${requestedActivityCount} day${requestedActivityCount === 1 ? "" : "s"})`}
+              >
+                {activityOptions.length > 0 ? (
+                  activityOptions.map((activity) => (
+                    <ActivityOptionRow
+                      activity={activity}
+                      checked={selectedActivities.includes(activity.id)}
+                      key={activity.id}
+                      onChange={() => toggleActivity(activity.id)}
+                    />
+                  ))
+                ) : (
+                  <p className="px-3 py-4 text-sm font-medium text-[#66736c]">
+                    No activity candidates returned. Try a broader destination or
+                    preference.
+                  </p>
+                )}
               </SelectorGroup>
             </div>
 
@@ -388,21 +613,15 @@ export default function Page() {
                 </aside>
 
                 <div className="space-y-3">
-                  {tripDates.map((date, index) => (
+                  {tripDayLabels.map((date, index) => (
                     <DayBreakdown
                       activity={
-                        selectedActivityItems[
-                          index % Math.max(selectedActivityItems.length, 1)
-                        ]
+                        activityPlan[index]?.activity
                       }
                       date={date}
                       hotel={selectedHotelItem}
                       key={date}
-                      restaurant={
-                        selectedRestaurantItems[
-                          index % Math.max(selectedRestaurantItems.length, 1)
-                        ]
-                      }
+                      mealSlots={mealPlan.filter((meal) => meal.date === date)}
                       travel={baseTravel[index] ?? baseTravel[0]}
                     />
                   ))}
@@ -486,26 +705,37 @@ function DayBreakdown({
   activity,
   date,
   hotel,
-  restaurant,
+  mealSlots,
   travel,
 }: {
   activity?: (typeof activities)[number];
   date: string;
   hotel: (typeof hotels)[number];
-  restaurant?: (typeof restaurants)[number];
+  mealSlots: {
+    date: string;
+    meal: MealName;
+    restaurant?: RestaurantOption;
+  }[];
   travel: (typeof baseTravel)[number];
 }) {
   return (
     <article className="rounded-[1.35rem] border border-[#e3e9e2] bg-white p-5 shadow-sm">
       <h3 className="text-2xl font-semibold text-[#202923]">{date}</h3>
       <ol className="mt-5 grid gap-4 text-sm text-[#4f5b55]">
+        {mealSlots.map((slot) => (
+          <li className="flex justify-between gap-4" key={slot.meal}>
+            <span>
+              {slot.meal}: {slot.restaurant?.name ?? "Open restaurant slot"}
+            </span>
+            <span>{slot.restaurant?.cuisine ?? "TBD"}</span>
+          </li>
+        ))}
         <li className="flex justify-between gap-4">
-          <span>First go to {activity?.name ?? "open walk"}</span>
+          <span>
+            Activity: {activity?.name ?? "open walk"}
+            {activity ? ` at ${formatActivityTime(activity)}` : ""}
+          </span>
           <span>{travel[2]} min</span>
-        </li>
-        <li className="flex justify-between gap-4">
-          <span>Then {restaurant?.name ?? "local dinner"}</span>
-          <span>{Number(travel[2]) + 7} min</span>
         </li>
         <li className="flex justify-between gap-4">
           <span>Then {hotel.name}</span>
@@ -513,6 +743,215 @@ function DayBreakdown({
         </li>
       </ol>
     </article>
+  );
+}
+
+function buildMealPlan(
+  dates: string[],
+  selectedRestaurants: RestaurantOption[],
+) {
+  const meals: MealName[] = ["Breakfast", "Lunch", "Dinner"];
+
+  return dates.flatMap((date, dayIndex) =>
+    meals.map((meal, mealIndex) => ({
+      date,
+      meal,
+      restaurant:
+        selectedRestaurants[
+          (dayIndex * meals.length + mealIndex) %
+            Math.max(selectedRestaurants.length, 1)
+        ],
+    })),
+  );
+}
+
+function buildActivityPlan(dates: string[], selectedActivities: ActivityOption[]) {
+  return dates.map((date, index) => ({
+    date,
+    activity:
+      selectedActivities[index % Math.max(selectedActivities.length, 1)],
+  }));
+}
+
+function getTripDays(value: CalendarValue) {
+  if (Array.isArray(value)) {
+    const [start, end] = value;
+
+    if (start && end) {
+      return enumerateDays(start, end);
+    }
+
+    if (start) {
+      return [startOfDay(start)];
+    }
+  }
+
+  if (value instanceof Date) {
+    return [startOfDay(value)];
+  }
+
+  return enumerateDays(
+    new Date("2026-01-02T00:00:00"),
+    new Date("2026-01-04T00:00:00"),
+  );
+}
+
+function enumerateDays(start: Date, end: Date) {
+  const first = startOfDay(start);
+  const last = startOfDay(end);
+  const days: Date[] = [];
+
+  for (
+    let current = first;
+    current <= last;
+    current = addDays(current, 1)
+  ) {
+    days.push(current);
+  }
+
+  return days;
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+function selectByCount<T extends { id: string }>(items: T[], count: number) {
+  return items.slice(0, Math.max(1, count)).map((item) => item.id);
+}
+
+function formatFullDate(date: Date) {
+  return date.toLocaleDateString("en-US");
+}
+
+function formatShortTime(date: Date) {
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatActivityTime(activity: ActivityOption) {
+  return activity.time ? formatShortTime(activity.time) : activity.timeLabel;
+}
+
+function mapActivityCandidates(candidates: ActivityCandidate[]) {
+  return candidates.map((candidate, index) => ({
+    id: `${slugify(candidate.name)}-${index}`,
+    name: candidate.name,
+    description: candidate.description,
+    time: null,
+    location: null,
+    price: 0,
+    priceLabel: "Price TBD",
+    timeLabel: "Time TBD",
+    locationLabel: candidate.locationHint || "Location TBD",
+    tags: candidate.tags,
+    sourceUrls: candidate.sourceUrls,
+    confidence: candidate.confidence,
+    needsVerification: candidate.needsVerification,
+  }));
+}
+
+function isDiscoveryResponse(value: unknown): value is DiscoveryResponse {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    Array.isArray((value as DiscoveryResponse).candidates)
+  );
+}
+
+function slugify(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 60) || "activity"
+  );
+}
+
+function ActivityOptionRow({
+  activity,
+  checked,
+  onChange,
+}: {
+  activity: ActivityOption;
+  checked: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <div className="grid gap-3 rounded-[0.95rem] px-3 py-3 transition hover:bg-[#fbfaf7] md:grid-cols-[auto_1fr_auto] md:items-start">
+      <input
+        aria-label={activity.name}
+        checked={checked}
+        className="mt-1 h-5 w-5 accent-[#1c241f]"
+        onChange={onChange}
+        type="checkbox"
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-base font-semibold text-[#202923]">
+            {activity.name}
+          </span>
+          {activity.needsVerification && (
+            <span className="rounded-full bg-[#fff0d8] px-2 py-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-[#8a5a11]">
+              Verify
+            </span>
+          )}
+          {activity.confidence !== null && (
+            <span className="text-xs font-semibold text-[#718077]">
+              {Math.round(activity.confidence * 100)}% match
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-sm text-[#66736c]">{activity.description}</p>
+        <p className="mt-2 text-xs font-semibold text-[#718077]">
+          {activity.timeLabel} - {activity.locationLabel}
+        </p>
+        {activity.tags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {activity.tags.slice(0, 5).map((tag) => (
+              <span
+                className="rounded-full border border-[#e2e8df] px-2 py-1 text-xs font-semibold text-[#536159]"
+                key={tag}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col gap-2 text-sm font-semibold text-[#202923] md:items-end">
+        <span>{activity.priceLabel}</span>
+        {activity.sourceUrls.length > 0 && (
+          <div className="flex flex-wrap gap-2 md:justify-end">
+            {activity.sourceUrls.slice(0, 2).map((url, index) => (
+              <a
+                className="text-xs font-bold text-[#346b55] underline-offset-4 hover:underline"
+                href={url}
+                key={url}
+                rel="noreferrer"
+                target="_blank"
+              >
+                Source {index + 1}
+              </a>
+            ))}
+            {activity.sourceUrls.length > 2 && (
+              <span className="text-xs text-[#718077]">
+                +{activity.sourceUrls.length - 2}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
