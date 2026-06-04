@@ -16,6 +16,7 @@
 # next.js
 /.next/
 /out/
+/lib/generated/prisma/
 
 # production
 /build

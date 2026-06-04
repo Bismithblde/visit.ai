@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Activity {
+  id              String           @id @default(cuid())
+  name            String
+  normalizedName  String
+  city            String
+  region          String?
+  country         String?
+  description     String
+  latitude        Float?
+  longitude       Float?
+  address         String?
+  priceLevel      String?
+  confidenceScore Float            @default(0.5)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  lastVerifiedAt  DateTime?
+  tags            ActivityTag[]
+  sources         ActivitySource[]
+
+  @@unique([normalizedName, city, region, country])
+  @@index([city, region, country])
+  @@index([confidenceScore])
+  @@index([updatedAt])
+}
+
+model ActivityTag {
+  id         String   @id @default(cuid())
+  activityId String
+  tag        String
+  weight     Float    @default(1)
+  confidence Float    @default(0.6)
+  activity   Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, tag])
+  @@index([tag])
+}
+
+model ActivitySource {
+  id         String   @id @default(cuid())
+  activityId String
+  sourceType String
+  url        String
+  title      String?
+  snippet    String?
+  queryUsed  String?
+  confidence Float    @default(0.5)
+  createdAt  DateTime @default(now())
+  activity   Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, url])
+  @@index([sourceType])
+  @@index([url])
+}
+
+model SearchResult {
+  id                 String   @id @default(cuid())
+  query              String
+  normalizedQueryKey String   @unique
+  city               String
+  resultJson         Json
+  createdAt          DateTime @default(now())
+  expiresAt          DateTime
+
+  @@index([city])
+  @@index([expiresAt])
+}
+
+model CityCoverage {
+  id                String    @id @default(cuid())
+  city              String
+  region            String?
+  country           String?
+  activityCount     Int       @default(0)
+  foodCount         Int       @default(0)
+  freeCount         Int       @default(0)
+  redditSourceCount Int       @default(0)
+  coverageScore     Float     @default(0)
+  lastIndexedAt     DateTime?
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([city, region, country])
+  @@index([coverageScore])
+}

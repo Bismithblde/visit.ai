@@ -57,18 +57,17 @@ describe("trip planner page integration", () => {
 
     expect(screen.getByText("Searching local activity sources")).toBeDefined();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/activities/discover",
+      "/api/activities",
       expect.objectContaining({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          location: "Lisbon",
+          city: "Lisbon",
           groupSize: 4,
           budget: "unknown",
           preferences: "quiet breakfasts and design stops",
-          searchMode: "balanced",
         }),
       }),
     );
@@ -86,28 +85,30 @@ describe("trip planner page integration", () => {
     await act(async () => {
       discovery.resolve(
         jsonResponse({
-          candidates: [
+          activities: [
             {
               name: "Hidden Design Walk",
               description: "A source-backed small group activity in Lisbon.",
-              locationHint: "Baixa",
               tags: ["design", "walking"],
               sourceUrls: [
                 "https://example.com/design-walk",
                 "https://example.com/lisbon-list",
                 "https://example.com/extra",
               ],
-              confidence: 0.82,
-              needsVerification: true,
+              sourceConfidence: 0.82,
+              score: 0.82,
+              recommendationReason: "Matches your walking preference",
+              location: { address: "Baixa" },
             },
             {
               name: "Quiet Breakfast Market",
               description: "A calm morning market stop.",
-              locationHint: "Alfama",
               tags: ["breakfast"],
               sourceUrls: ["https://example.com/market"],
-              confidence: 0.61,
-              needsVerification: true,
+              sourceConfidence: 0.61,
+              score: 0.61,
+              recommendationReason: "Matches your food preference",
+              location: { address: "Alfama" },
             },
           ],
         }),

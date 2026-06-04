@@ -62,8 +62,25 @@ interface ActivityCandidate {
   needsVerification: true;
 }
 
+interface RankedActivity {
+  name: string;
+  description: string;
+  tags: string[];
+  sourceUrls: string[];
+  sourceConfidence: number;
+  score: number;
+  recommendationReason: string;
+  location?: {
+    address?: string;
+    latitude?: number;
+    longitude?: number;
+  };
+  priceEstimate?: string;
+}
+
 interface DiscoveryResponse {
-  candidates: ActivityCandidate[];
+  activities?: RankedActivity[];
+  candidates?: ActivityCandidate[];
 }
 
 interface RestaurantOption {
@@ -373,17 +390,16 @@ export default function Page() {
     setStatus("processing");
 
     try {
-      const response = await fetch("/api/activities/discover", {
+      const response = await fetch("/api/activities", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          location,
+          city: location,
           groupSize: parsedGroupSize,
           budget: "unknown",
           preferences: personalization,
-          searchMode: "balanced",
         }),
       });
 
@@ -399,7 +415,7 @@ export default function Page() {
         throw new Error("Activity discovery returned an unexpected response.");
       }
 
-      setActivityOptions(mapActivityCandidates(body.candidates));
+      setActivityOptions(mapDiscoveryActivities(body));
       setHasDiscoveredActivities(true);
       setStatus("ready");
     } catch (error) {
@@ -841,6 +857,28 @@ function formatActivityTime(activity: ActivityOption) {
   return activity.time ? formatShortTime(activity.time) : activity.timeLabel;
 }
 
+function mapDiscoveryActivities(response: DiscoveryResponse) {
+  if (Array.isArray(response.activities)) {
+    return response.activities.map((activity, index) => ({
+      id: `${slugify(activity.name)}-${index}`,
+      name: activity.name,
+      description: activity.description,
+      time: null,
+      location: null,
+      price: 0,
+      priceLabel: activity.priceEstimate ?? "Price TBD",
+      timeLabel: "Time TBD",
+      locationLabel: formatRankedActivityLocation(activity),
+      tags: activity.tags,
+      sourceUrls: activity.sourceUrls,
+      confidence: activity.score,
+      needsVerification: true,
+    }));
+  }
+
+  return mapActivityCandidates(response.candidates ?? []);
+}
+
 function mapActivityCandidates(candidates: ActivityCandidate[]) {
   return candidates.map((candidate, index) => ({
     id: `${slugify(candidate.name)}-${index}`,
@@ -863,8 +901,24 @@ function isDiscoveryResponse(value: unknown): value is DiscoveryResponse {
   return (
     Boolean(value) &&
     typeof value === "object" &&
-    Array.isArray((value as DiscoveryResponse).candidates)
+    (Array.isArray((value as DiscoveryResponse).activities) ||
+      Array.isArray((value as DiscoveryResponse).candidates))
   );
+}
+
+function formatRankedActivityLocation(activity: RankedActivity) {
+  if (activity.location?.address) {
+    return activity.location.address;
+  }
+
+  if (
+    typeof activity.location?.latitude === "number" &&
+    typeof activity.location.longitude === "number"
+  ) {
+    return `${activity.location.latitude}, ${activity.location.longitude}`;
+  }
+
+  return "Location TBD";
 }
 
 function slugify(value: string) {
