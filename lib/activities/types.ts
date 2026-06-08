@@ -40,6 +40,19 @@ export interface ActivityRequest {
   balancePreferences: string[];
 }
 
+export interface ActivityDateRange {
+  start?: string;
+  end?: string;
+}
+
+export interface ActivityRecommendationRequest {
+  location: string;
+  groupSize?: number;
+  dateRange?: ActivityDateRange;
+  budget?: "low" | "medium" | "high" | "unknown";
+  preferencePrompt: string;
+}
+
 export interface ParsedPreference {
   tagWeights: Partial<Record<ActivityTagName, number>>;
   importantTags: ActivityTagName[];
@@ -58,7 +71,11 @@ export interface ActivityRecord {
   longitude: number | null;
   address: string | null;
   priceLevel: string | null;
+  indoorOutdoor?: string | null;
+  minGroupSize?: number | null;
+  maxGroupSize?: number | null;
   confidenceScore: number;
+  needsFallbackVerification?: boolean;
   createdAt: Date;
   updatedAt: Date;
   lastVerifiedAt: Date | null;
@@ -97,6 +114,11 @@ export interface ActivityResponseItem {
     longitude?: number;
   };
   priceEstimate?: string;
+  groupSizeRange?: {
+    min?: number;
+    max?: number;
+  };
+  indoorOutdoor?: string;
   recommendationReason: string;
   score: number;
 }
@@ -129,6 +151,10 @@ export interface SearchCandidate {
   country?: string;
   description: string;
   tags: ActivityTagName[];
+  locationHint?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
   source: {
     sourceType: ActivitySourceKind;
     url: string;
@@ -138,5 +164,9 @@ export interface SearchCandidate {
     confidence: number;
   };
   priceLevel?: string;
+  indoorOutdoor?: string;
+  minGroupSize?: number;
+  maxGroupSize?: number;
+  needsFallbackVerification?: boolean;
   confidenceScore: number;
 }

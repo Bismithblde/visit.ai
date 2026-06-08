@@ -1,6 +1,7 @@
 import { sourceQualityScore } from "@/lib/activity-discovery/source-quality";
 import type {
   ActivityRecord,
+  ActivityRequest,
   ActivityResponseItem,
   ActivityTagName,
   ParsedPreference,
@@ -50,15 +51,18 @@ export function rankActivities(
   activities: ActivityRecord[],
   parsed: ParsedPreference,
   budget: string | undefined,
+  request?: Pick<ActivityRequest, "groupSize" | "dates">,
 ) {
   return activities
     .map((activity) => {
-      const components = scoreComponents(activity, parsed, budget);
+      const components = scoreComponents(activity, parsed, budget, request);
       const score =
-        components.preferenceMatch * 0.4 +
-        activity.confidenceScore * 0.2 +
-        components.sourceEvidence * 0.15 +
-        components.localSignal * 0.15 +
+        components.preferenceMatch * 0.34 +
+        activity.confidenceScore * 0.18 +
+        components.sourceEvidence * 0.14 +
+        components.localSignal * 0.12 +
+        components.groupFit * 0.08 +
+        components.dateFit * 0.04 +
         components.freshness * 0.05 +
         components.priceFit * 0.05;
 
@@ -100,6 +104,8 @@ export function toResponseItem(
     evidence,
     location: buildLocation(activity),
     priceEstimate: priceLabel(activity.priceLevel),
+    groupSizeRange: buildGroupSizeRange(activity),
+    indoorOutdoor: activity.indoorOutdoor ?? undefined,
     recommendationReason,
     score,
   };
@@ -109,6 +115,7 @@ function scoreComponents(
   activity: ActivityRecord,
   parsed: ParsedPreference,
   budget: string | undefined,
+  request?: Pick<ActivityRequest, "groupSize" | "dates">,
 ) {
   const tagMap = new Map(activity.tags.map((tag) => [tag.tag, tag]));
   const positiveWeights = Object.entries(parsed.tagWeights).filter(
@@ -133,6 +140,8 @@ function scoreComponents(
   );
   const freshness = freshnessScore(activity.lastVerifiedAt ?? activity.updatedAt);
   const priceFit = priceFitScore(activity.priceLevel, budget);
+  const groupFit = groupFitScore(activity, request?.groupSize);
+  const dateFit = dateFitScore(activity, request?.dates);
 
   return {
     preferenceMatch,
@@ -140,6 +149,8 @@ function scoreComponents(
     localSignal,
     freshness,
     priceFit,
+    groupFit,
+    dateFit,
   };
 }
 
@@ -153,6 +164,7 @@ function recommendationReason(
   );
 
   if (matchedTag) return `Matches your ${matchedTag.replace("_", " ")} preference`;
+  if (components.groupFit >= 0.95) return "Fits your group size";
   if (components.localSignal >= 0.9) return "Mentioned by local sources";
   if (activity.priceLevel === "cheap" || activity.priceLevel === "free") {
     return "Good low-cost option";
@@ -179,6 +191,28 @@ function priceFitScore(priceLevel: string | null, budget: string | undefined) {
   return 0.55;
 }
 
+function groupFitScore(activity: ActivityRecord, groupSize: number | undefined) {
+  if (!groupSize) return 0.6;
+  const min = activity.minGroupSize ?? 1;
+  const max = activity.maxGroupSize ?? 50;
+  if (groupSize >= min && groupSize <= max) return 1;
+  if (groupSize < min) return Math.max(0.2, 1 - (min - groupSize) / 6);
+  return Math.max(0.15, 1 - (groupSize - max) / 20);
+}
+
+function dateFitScore(activity: ActivityRecord, dates: string[] | undefined) {
+  if (!dates || dates.length === 0) return 0.6;
+  const tagSet = new Set(activity.tags.map((tag) => tag.tag));
+  const text = dates.join(" ").toLowerCase();
+  if (text.includes("rain") || text.includes("rainy")) {
+    return tagSet.has("rainy_day") || activity.indoorOutdoor === "indoor" ? 1 : 0.45;
+  }
+  if (text.includes("weekend") || text.includes("saturday") || text.includes("sunday")) {
+    return 0.75;
+  }
+  return 0.65;
+}
+
 function buildLocation(activity: ActivityRecord) {
   if (!activity.address && activity.latitude === null && activity.longitude === null) {
     return undefined;
@@ -188,6 +222,17 @@ function buildLocation(activity: ActivityRecord) {
     address: activity.address ?? undefined,
     latitude: activity.latitude ?? undefined,
     longitude: activity.longitude ?? undefined,
+  };
+}
+
+function buildGroupSizeRange(activity: ActivityRecord) {
+  if (activity.minGroupSize == null && activity.maxGroupSize == null) {
+    return undefined;
+  }
+
+  return {
+    min: activity.minGroupSize ?? undefined,
+    max: activity.maxGroupSize ?? undefined,
   };
 }
 

@@ -11,6 +11,7 @@ model Activity {
   id              String           @id @default(cuid())
   name            String
   normalizedName  String
+  locationId      String?
   city            String
   region          String?
   country         String?
@@ -19,17 +20,42 @@ model Activity {
   longitude       Float?
   address         String?
   priceLevel      String?
+  indoorOutdoor   String?
+  minGroupSize    Int?
+  maxGroupSize    Int?
   confidenceScore Float            @default(0.5)
+  needsFallbackVerification Boolean @default(false)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   lastVerifiedAt  DateTime?
+  location        Location?        @relation(fields: [locationId], references: [id])
   tags            ActivityTag[]
   sources         ActivitySource[]
 
   @@unique([normalizedName, city, region, country])
+  @@index([locationId])
   @@index([city, region, country])
   @@index([confidenceScore])
   @@index([updatedAt])
+}
+
+model Location {
+  id            String     @id @default(cuid())
+  canonicalName String
+  normalizedKey String     @unique
+  city          String
+  region        String?
+  country       String?
+  aliases       Json?
+  parentId      String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  parent        Location?  @relation("LocationHierarchy", fields: [parentId], references: [id])
+  children      Location[] @relation("LocationHierarchy")
+  activities    Activity[]
+
+  @@index([parentId])
+  @@index([city, region, country])
 }
 
 model ActivityTag {
@@ -72,6 +98,28 @@ model SearchResult {
 
   @@index([city])
   @@index([expiresAt])
+}
+
+model SearchRun {
+  id              String   @id @default(cuid())
+  locationKey     String
+  requestHash     String
+  query           String
+  normalizedQuery String
+  url             String?
+  normalizedUrl   String?
+  title           String?
+  contentHash     String?
+  status          String   @default("pending")
+  metadata        Json?
+  fetchedAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([locationKey])
+  @@index([requestHash])
+  @@index([normalizedQuery])
+  @@index([normalizedUrl])
+  @@index([contentHash])
 }
 
 model CityCoverage {

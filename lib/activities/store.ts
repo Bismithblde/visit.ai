@@ -101,8 +101,15 @@ class PrismaActivityStore implements ActivityStore {
             region: candidate.region ? normalizePlace(candidate.region) : undefined,
             country: candidate.country ? normalizePlace(candidate.country) : undefined,
             description: candidate.description,
+            address: candidate.address ?? candidate.locationHint,
+            latitude: candidate.latitude,
+            longitude: candidate.longitude,
             priceLevel: candidate.priceLevel,
+            indoorOutdoor: candidate.indoorOutdoor,
+            minGroupSize: candidate.minGroupSize,
+            maxGroupSize: candidate.maxGroupSize,
             confidenceScore: candidate.confidenceScore,
+            needsFallbackVerification: candidate.needsFallbackVerification ?? false,
             lastVerifiedAt: new Date(),
           },
         }));
@@ -112,7 +119,16 @@ class PrismaActivityStore implements ActivityStore {
           where: { id: existing.id },
           data: {
             description: longerText(existing.description, candidate.description),
+            address: existing.address ?? candidate.address ?? candidate.locationHint,
+            latitude: existing.latitude ?? candidate.latitude,
+            longitude: existing.longitude ?? candidate.longitude,
+            priceLevel: existing.priceLevel ?? candidate.priceLevel,
+            indoorOutdoor: existing.indoorOutdoor ?? candidate.indoorOutdoor,
+            minGroupSize: minDefined(existing.minGroupSize, candidate.minGroupSize),
+            maxGroupSize: maxDefined(existing.maxGroupSize, candidate.maxGroupSize),
             confidenceScore: Math.max(existing.confidenceScore, candidate.confidenceScore),
+            needsFallbackVerification:
+              existing.needsFallbackVerification && (candidate.needsFallbackVerification ?? false),
             lastVerifiedAt: new Date(),
           },
         });
@@ -231,7 +247,11 @@ export function candidatesToRecords(candidates: SearchCandidate[]): ActivityReco
     longitude: null,
     address: null,
     priceLevel: candidate.priceLevel ?? null,
+    indoorOutdoor: candidate.indoorOutdoor ?? null,
+    minGroupSize: candidate.minGroupSize ?? null,
+    maxGroupSize: candidate.maxGroupSize ?? null,
     confidenceScore: candidate.confidenceScore,
+    needsFallbackVerification: candidate.needsFallbackVerification ?? false,
     createdAt: now,
     updatedAt: now,
     lastVerifiedAt: now,
@@ -252,4 +272,16 @@ export function candidatesToRecords(candidates: SearchCandidate[]): ActivityReco
 
 function longerText(a: string, b: string) {
   return a.length >= b.length ? a : b;
+}
+
+function minDefined(a: number | null | undefined, b: number | null | undefined) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.min(a, b);
+}
+
+function maxDefined(a: number | null | undefined, b: number | null | undefined) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
 }

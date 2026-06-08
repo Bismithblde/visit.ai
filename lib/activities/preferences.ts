@@ -1,6 +1,11 @@
 import { ACTIVITY_TAG_SET } from "./constants";
 import { cleanWhitespace } from "./normalize";
-import type { ActivityRequest, ActivityTagName, ParsedPreference } from "./types";
+import type {
+  ActivityRecommendationRequest,
+  ActivityRequest,
+  ActivityTagName,
+  ParsedPreference,
+} from "./types";
 
 const TAG_KEYWORDS: Record<ActivityTagName, string[]> = {
   food: ["food", "restaurant", "restaurants", "eat", "eats", "dining", "breakfast", "lunch", "dinner", "cafe", "coffee", "market"],
@@ -64,12 +69,33 @@ export function parseActivityInput(input: unknown) {
       city,
       region: optionalString(record.region ?? record.state),
       country: optionalString(record.country),
-      dates: parseDates(record.dates),
+      dates: parseDates(record.dates ?? record.dateRange),
       groupSize,
       budget: parseBudget(record.budget),
-      preferences: parsePreferenceText(record.preferences),
+      preferences: parsePreferenceText(record.preferences ?? record.preferencePrompt),
       balancePreferences: parseBalancePreferences(record),
     } satisfies ActivityRequest,
+  };
+}
+
+export function parseRecommendationInput(input: unknown) {
+  const parsed = parseActivityInput(input);
+
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  const record = input as Record<string, unknown>;
+  return {
+    ok: true as const,
+    request: {
+      location: parsed.request.city,
+      groupSize: parsed.request.groupSize,
+      dateRange: parseDateRange(record.dateRange),
+      budget: parsed.request.budget,
+      preferencePrompt: parsed.request.preferences,
+    } satisfies ActivityRecommendationRequest,
+    activityRequest: parsed.request,
   };
 }
 
@@ -138,9 +164,9 @@ function keywordPolarity(text: string, matches: string[]) {
 
 function parseBudget(value: unknown): ActivityRequest["budget"] {
   const text = stringValue(value).toLowerCase();
-  if (["low", "cheap", "budget"].includes(text)) return "low";
-  if (["medium", "mid", "moderate"].includes(text)) return "medium";
-  if (["high", "expensive", "luxury"].includes(text)) return "high";
+  if (["$", "low", "cheap", "budget"].includes(text)) return "low";
+  if (["$$", "medium", "mid", "moderate"].includes(text)) return "medium";
+  if (["$$$", "high", "expensive", "luxury"].includes(text)) return "high";
   return "unknown";
 }
 
@@ -164,6 +190,15 @@ function parseBalancePreferences(record: Record<string, unknown>) {
 }
 
 function parseDates(value: unknown) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const range = value as Record<string, unknown>;
+    return [range.start, range.end]
+      .map(stringValue)
+      .map(cleanWhitespace)
+      .filter(Boolean)
+      .slice(0, 2);
+  }
+
   if (Array.isArray(value)) {
     return value.map(stringValue).map(cleanWhitespace).filter(Boolean).slice(0, 12);
   }
@@ -171,6 +206,22 @@ function parseDates(value: unknown) {
     return [cleanWhitespace(value)];
   }
   return undefined;
+}
+
+function parseDateRange(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const start = optionalString(record.start);
+  const end = optionalString(record.end);
+
+  if (!start && !end) {
+    return undefined;
+  }
+
+  return { start, end };
 }
 
 function optionalString(value: unknown) {

@@ -3,6 +3,8 @@ import { Redis } from "@upstash/redis";
 export interface CacheClient {
   get<T>(key: string): Promise<T | null>;
   set<T>(key: string, value: T, options?: { ex?: number }): Promise<void>;
+  del(key: string): Promise<void>;
+  setIfNotExists<T>(key: string, value: T, ttlSeconds: number): Promise<boolean>;
 }
 
 class NoopCache implements CacheClient {
@@ -12,6 +14,14 @@ class NoopCache implements CacheClient {
 
   async set(): Promise<void> {
     return;
+  }
+
+  async del(): Promise<void> {
+    return;
+  }
+
+  async setIfNotExists(): Promise<boolean> {
+    return false;
   }
 }
 
@@ -41,6 +51,13 @@ export function getCacheClient(): CacheClient {
       }
 
       await redis!.set(key, value);
+    },
+    async del(key: string) {
+      await redis!.del(key);
+    },
+    async setIfNotExists<T>(key: string, value: T, ttlSeconds: number) {
+      const result = await redis!.set(key, value, { ex: ttlSeconds, nx: true });
+      return result === "OK";
     },
   };
 }
