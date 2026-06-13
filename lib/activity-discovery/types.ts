@@ -1,63 +1,99 @@
-export type ActivityBudget = "low" | "medium" | "high" | "unknown";
-export type ActivityGroupFit =
-  | "solo"
-  | "couple"
-  | "small_group"
-  | "large_group"
-  | "unknown";
-
-export type ActivityCandidateType =
-  | "place"
-  | "area"
-  | "event"
-  | "activity_type"
-  | "route";
+export interface ActivityDateRange {
+  start?: string;
+  end?: string;
+}
 
 export interface ActivityDiscoveryRequest {
-  location: string;
+  cityOrLocation: string;
   groupSize: number;
-  budget: ActivityBudget;
-  preferences: string[];
+  dateRange?: ActivityDateRange;
+  preferencePrompt: string;
   searchMode: "fast" | "balanced" | "deep";
 }
 
-export interface ActivityCandidate {
-  name: string;
-  type: ActivityCandidateType;
-  description: string;
-  locationHint: string;
-  budgetFit: ActivityBudget;
-  groupFit: ActivityGroupFit;
-  tags: string[];
-  sourceUrls: string[];
-  evidenceSnippets: string[];
-  confidence: number;
-  needsVerification: true;
+export type DiscoverySource =
+  | "geoapify"
+  | "osm"
+  | "reddit"
+  | "web"
+  | "geoapify+reddit"
+  | "geoapify+web"
+  | "osm+reddit"
+  | "osm+web"
+  | "mixed";
+
+export interface DiscoveryLocation {
+  query: string;
+  latitude?: number;
+  longitude?: number;
+  boundingBox?: [number, number, number, number];
 }
 
-export interface ActivityCluster {
-  id: string;
-  title: string;
-  theme: string;
-  description: string;
-  candidateNames: string[];
-  tags: string[];
+export interface ActivityDiscoveryItem {
+  activityName: string;
+  placeName?: string;
+  location?: {
+    label?: string;
+    latitude?: number;
+    longitude?: number;
+  };
+  source: DiscoverySource;
   sourceUrls: string[];
-  confidence: number;
-  needsVerification: true;
+  osm?: {
+    id: string;
+    type: string;
+    tags: Record<string, string>;
+    category: string;
+  };
+  provider?: {
+    name: "osm" | "geoapify";
+    id: string;
+    categories?: string[];
+    formattedAddress?: string;
+    distanceMeters?: number;
+    estimatedCredits?: number;
+  };
+  tags: string[];
+  confidenceScore: number;
+  preferenceMatchScore: number;
+  rating?: number;
+  reviewCount?: number;
+  verificationSources?: string[];
+  reviewSummary?: string;
+  evidenceSummary: string;
+  reason: string;
+  fitsPreference: boolean;
+  missingInfo: string[];
+  possibleConcerns: string[];
 }
 
 export interface DiscoveryDebug {
   searchedQueries: string[];
+  reviewQueries: string[];
   visitedUrls: string[];
   failedUrls: string[];
+  timedOutStages: string[];
+  intentProfile?: IntentProfile;
+  sourceCounts: {
+    geoapify: number;
+    geoapifyCalls: number;
+    geoapifyEstimatedCredits: number;
+    geoapifyDeduped: number;
+    geoapifyEvidenceVerified: number;
+    osm: number;
+    intentFiltered: number;
+    reviewVerified: number;
+    reddit: number;
+    web: number;
+    merged: number;
+    returned: number;
+  };
 }
 
 export interface DiscoveryResponse {
-  location: string;
+  location: DiscoveryLocation;
   queryPlan: string[];
-  candidates: ActivityCandidate[];
-  clusters: ActivityCluster[];
+  activities: ActivityDiscoveryItem[];
   debug: DiscoveryDebug;
 }
 
@@ -73,6 +109,7 @@ export interface PageContent {
   title?: string;
   content: string;
   sourceType: SourceType;
+  score?: number;
 }
 
 export type SourceType =
@@ -93,4 +130,54 @@ export interface DiscoveryTool {
 export interface DiscoveryToolDebug {
   visitedUrls: string[];
   failedUrls: string[];
+}
+
+export interface OSMCandidate {
+  provider?: "osm" | "geoapify";
+  providerCategories?: string[];
+  formattedAddress?: string;
+  distanceMeters?: number;
+  estimatedCredits?: number;
+  activityName: string;
+  placeName: string;
+  osmId: string;
+  osmType: string;
+  latitude?: number;
+  longitude?: number;
+  rawTags: Record<string, string>;
+  category: string;
+  tags: string[];
+  possibleActivities: string[];
+}
+
+export interface IntentConcept {
+  term: string;
+  weight: number;
+  type: "must" | "should" | "avoid";
+}
+
+export interface IntentProfile {
+  primaryGoal: string;
+  concepts: IntentConcept[];
+  placeTypes: string[];
+  activityTypes: string[];
+  attributes: string[];
+  exclusions: string[];
+  reviewSearchTerms: string[];
+  minimumPreferenceScore: number;
+  searchAreaKind: "neighborhood" | "city" | "metro" | "region" | "unknown";
+  recommendedRadiusMeters: number;
+  radiusReason: string;
+}
+
+export interface SocialCandidate {
+  activityName: string;
+  placeName?: string;
+  sourceUrl: string;
+  sourceType: SourceType;
+  tags: string[];
+  sentiment: "positive" | "mixed" | "negative" | "unknown";
+  evidenceSummary: string;
+  confidenceScore: number;
+  preferenceRelevanceScore: number;
 }

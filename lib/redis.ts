@@ -32,7 +32,7 @@ export function getCacheClient(): CacheClient {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-  if (!url || !token) {
+  if (!isUsableRedisConfig(url, token)) {
     return noopCache;
   }
 
@@ -60,4 +60,19 @@ export function getCacheClient(): CacheClient {
       return result === "OK";
     },
   };
+}
+
+function isUsableRedisConfig(
+  url: string | undefined,
+  token: string | undefined,
+) {
+  if (!url || !token || url.includes("...") || token.includes("...")) {
+    return false;
+  }
+
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
 }

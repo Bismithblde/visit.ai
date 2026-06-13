@@ -2,7 +2,6 @@ import { isRedditUrl, fetchRedditJson } from "./reddit";
 import { getSourceType, sourceQualityScore } from "./source-quality";
 import type {
   ActivityDiscoveryRequest,
-  DiscoveryDebug,
   DiscoveryTool,
   PageContent,
   SearchResult,
@@ -10,7 +9,13 @@ import type {
 
 interface CollectionResult {
   pages: PageContent[];
-  debug: DiscoveryDebug;
+  debug: CollectionDebug;
+}
+
+interface CollectionDebug {
+  searchedQueries: string[];
+  visitedUrls: string[];
+  failedUrls: string[];
 }
 
 const EXTRACT_CONCURRENCY = 4;

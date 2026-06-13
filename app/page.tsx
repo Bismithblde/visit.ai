@@ -62,25 +62,49 @@ interface ActivityCandidate {
   needsVerification: true;
 }
 
-interface RankedActivity {
-  name: string;
-  description: string;
+interface DiscoveredActivity {
+  activityName: string;
+  placeName?: string;
+  evidenceSummary: string;
+  reason: string;
   tags: string[];
   sourceUrls: string[];
-  sourceConfidence: number;
-  score: number;
-  recommendationReason: string;
+  confidenceScore: number;
+  preferenceMatchScore: number;
+  fitsPreference: boolean;
   location?: {
-    address?: string;
+    label?: string;
     latitude?: number;
     longitude?: number;
   };
-  priceEstimate?: string;
 }
 
 interface DiscoveryResponse {
-  activities?: RankedActivity[];
+  activities?: DiscoveredActivity[];
   candidates?: ActivityCandidate[];
+  queryPlan?: string[];
+  debug?: DiscoveryDebug;
+}
+
+interface DiscoveryDebug {
+  searchedQueries: string[];
+  visitedUrls: string[];
+  failedUrls: string[];
+  timedOutStages: string[];
+  sourceCounts: {
+    geoapify?: number;
+    geoapifyCalls?: number;
+    geoapifyEstimatedCredits?: number;
+    geoapifyDeduped?: number;
+    geoapifyEvidenceVerified?: number;
+    osm: number;
+    intentFiltered?: number;
+    reviewVerified?: number;
+    reddit: number;
+    web: number;
+    merged: number;
+    returned: number;
+  };
 }
 
 interface RestaurantOption {
@@ -244,6 +268,8 @@ export default function Page() {
   const [submittedDestination, setSubmittedDestination] = useState("");
   const [formError, setFormError] = useState("");
   const [activityOptions, setActivityOptions] = useState<ActivityOption[]>(activities);
+  const [discoveryDebug, setDiscoveryDebug] = useState<DiscoveryDebug | null>(null);
+  const [discoveryQueryPlan, setDiscoveryQueryPlan] = useState<string[]>([]);
   const [hasDiscoveredActivities, setHasDiscoveredActivities] = useState(false);
   const [selectedHotel, setSelectedHotel] = useState(hotels[0].id);
   const [selectedRestaurants, setSelectedRestaurants] = useState([
@@ -386,20 +412,23 @@ export default function Page() {
     setSelectedRestaurants(selectByCount(restaurants, requestedRestaurantCount));
     setActiveStep(0);
     setFormError("");
+    setDiscoveryDebug(null);
+    setDiscoveryQueryPlan([]);
     setTripMade(false);
     setStatus("processing");
 
     try {
-      const response = await fetch("/api/activities", {
+      const response = await fetch("/api/activities/discover", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          city: location,
+          cityOrLocation: location,
           groupSize: parsedGroupSize,
-          budget: "unknown",
-          preferences: personalization,
+          dateRange: getRequestDateRange(calendarValue),
+          preferencePrompt: personalization,
+          searchMode: "balanced",
         }),
       });
 
@@ -416,6 +445,8 @@ export default function Page() {
       }
 
       setActivityOptions(mapDiscoveryActivities(body));
+      setDiscoveryDebug(body.debug ?? null);
+      setDiscoveryQueryPlan(body.queryPlan ?? []);
       setHasDiscoveredActivities(true);
       setStatus("ready");
     } catch (error) {
@@ -593,10 +624,10 @@ export default function Page() {
                     />
                   ))
                 ) : (
-                  <p className="px-3 py-4 text-sm font-medium text-[#66736c]">
-                    No activity candidates returned. Try a broader destination or
-                    preference.
-                  </p>
+                  <DiscoveryEmptyState
+                    debug={discoveryDebug}
+                    queryPlan={discoveryQueryPlan}
+                  />
                 )}
               </SelectorGroup>
             </div>
@@ -705,6 +736,95 @@ function OptionRow({
       </span>
       <span className="text-sm font-semibold text-[#202923]">{cost}</span>
     </label>
+  );
+}
+
+function DiscoveryEmptyState({
+  debug,
+  queryPlan,
+}: {
+  debug: DiscoveryDebug | null;
+  queryPlan: string[];
+}) {
+  if (!debug) {
+    return (
+      <p className="px-3 py-4 text-sm font-medium text-[#66736c]">
+        No activity candidates returned. Try a broader destination or preference.
+      </p>
+    );
+  }
+
+  const counts = debug.sourceCounts;
+
+  return (
+    <div className="grid gap-4 px-3 py-4 text-sm text-[#4f5b55]">
+      <p className="font-semibold text-[#202923]">
+        No final activities returned. Discovery diagnostics:
+      </p>
+      <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-5">
+        <DebugMetric label="Geoapify" value={counts.geoapify ?? 0} />
+        <DebugMetric label="OSM" value={counts.osm} />
+        <DebugMetric label="Reddit" value={counts.reddit} />
+        <DebugMetric label="Web" value={counts.web} />
+        <DebugMetric label="Merged" value={counts.merged} />
+        <DebugMetric label="Returned" value={counts.returned} />
+      </div>
+      {(counts.geoapifyCalls ?? 0) > 0 && (
+        <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-4">
+          <DebugMetric label="Geo calls" value={counts.geoapifyCalls ?? 0} />
+          <DebugMetric
+            label="Geo credits"
+            value={counts.geoapifyEstimatedCredits ?? 0}
+          />
+          <DebugMetric label="Geo deduped" value={counts.geoapifyDeduped ?? 0} />
+          <DebugMetric
+            label="Geo evidence"
+            value={counts.geoapifyEvidenceVerified ?? 0}
+          />
+        </div>
+      )}
+
+      {debug.timedOutStages.length > 0 && (
+        <DebugList label="Timed out / failed stages" values={debug.timedOutStages} />
+      )}
+      {debug.failedUrls.length > 0 && (
+        <DebugList label="Failed URLs" values={debug.failedUrls.slice(0, 5)} />
+      )}
+      {queryPlan.length > 0 && (
+        <DebugList label="Search queries" values={queryPlan.slice(0, 8)} />
+      )}
+      {debug.visitedUrls.length > 0 && (
+        <DebugList label="Visited URLs" values={debug.visitedUrls.slice(0, 5)} />
+      )}
+    </div>
+  );
+}
+
+function DebugMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <span className="block text-xs font-semibold uppercase tracking-[0.12em] text-[#718077]">
+        {label}
+      </span>
+      <span className="mt-1 block text-xl font-semibold text-[#202923]">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DebugList({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div className="grid gap-2">
+      <p className="font-semibold text-[#202923]">{label}</p>
+      <ul className="grid gap-1 text-xs font-medium text-[#66736c]">
+        {values.map((value) => (
+          <li className="break-words" key={value}>
+            {value}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -857,21 +977,52 @@ function formatActivityTime(activity: ActivityOption) {
   return activity.time ? formatShortTime(activity.time) : activity.timeLabel;
 }
 
+function getRequestDateRange(value: CalendarValue) {
+  if (Array.isArray(value)) {
+    const [start, end] = value;
+    return {
+      ...(start ? { start: formatIsoDate(start) } : {}),
+      ...(end ? { end: formatIsoDate(end) } : {}),
+    };
+  }
+
+  if (value instanceof Date) {
+    const date = formatIsoDate(value);
+    return { start: date, end: date };
+  }
+
+  return undefined;
+}
+
+function formatIsoDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function mapDiscoveryActivities(response: DiscoveryResponse) {
   if (Array.isArray(response.activities)) {
     return response.activities.map((activity, index) => ({
-      id: `${slugify(activity.name)}-${index}`,
-      name: activity.name,
-      description: activity.description,
+      id: `${slugify(activity.activityName)}-${index}`,
+      name: activity.activityName,
+      description: activity.reason || activity.evidenceSummary,
       time: null,
-      location: null,
+      location:
+        typeof activity.location?.latitude === "number" &&
+        typeof activity.location.longitude === "number"
+          ? {
+              latitude: activity.location.latitude,
+              longitude: activity.location.longitude,
+            }
+          : null,
       price: 0,
-      priceLabel: activity.priceEstimate ?? "Price TBD",
+      priceLabel: "Price TBD",
       timeLabel: "Time TBD",
-      locationLabel: formatRankedActivityLocation(activity),
+      locationLabel: formatDiscoveredActivityLocation(activity),
       tags: activity.tags,
       sourceUrls: activity.sourceUrls,
-      confidence: activity.score,
+      confidence: activity.preferenceMatchScore || activity.confidenceScore,
       needsVerification: true,
     }));
   }
@@ -906,9 +1057,9 @@ function isDiscoveryResponse(value: unknown): value is DiscoveryResponse {
   );
 }
 
-function formatRankedActivityLocation(activity: RankedActivity) {
-  if (activity.location?.address) {
-    return activity.location.address;
+function formatDiscoveredActivityLocation(activity: DiscoveredActivity) {
+  if (activity.location?.label) {
+    return activity.location.label;
   }
 
   if (

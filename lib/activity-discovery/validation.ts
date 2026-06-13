@@ -1,7 +1,4 @@
-import type {
-  ActivityBudget,
-  ActivityDiscoveryRequest,
-} from "./types";
+import type { ActivityDateRange, ActivityDiscoveryRequest } from "./types";
 
 interface ValidationResult {
   ok: boolean;
@@ -9,7 +6,6 @@ interface ValidationResult {
   error?: string;
 }
 
-const BUDGETS = new Set(["low", "medium", "high", "unknown"]);
 const SEARCH_MODES = new Set(["fast", "balanced", "deep"]);
 
 export function parseDiscoveryRequest(input: unknown): ValidationResult {
@@ -18,10 +14,12 @@ export function parseDiscoveryRequest(input: unknown): ValidationResult {
   }
 
   const record = input as Record<string, unknown>;
-  const location = stringValue(record.location).trim();
+  const cityOrLocation = (
+    stringValue(record.cityOrLocation) || stringValue(record.location)
+  ).trim();
 
-  if (!location) {
-    return { ok: false, error: "location is required." };
+  if (!cityOrLocation) {
+    return { ok: false, error: "cityOrLocation is required." };
   }
 
   const groupSize = numberValue(record.groupSize);
@@ -33,21 +31,68 @@ export function parseDiscoveryRequest(input: unknown): ValidationResult {
     };
   }
 
+  const dateRange = parseDateRange(record.dateRange);
+
+  if (dateRange === false) {
+    return {
+      ok: false,
+      error: "dateRange must use YYYY-MM-DD start/end values.",
+    };
+  }
+
   return {
     ok: true,
     request: {
-      location,
+      cityOrLocation,
       groupSize,
-      budget: parseBudget(record.budget),
-      preferences: parsePreferences(record.preferences),
+      dateRange,
+      preferencePrompt: parsePreferencePrompt(record),
       searchMode: parseSearchMode(record.searchMode),
     },
   };
 }
 
-function parseBudget(value: unknown): ActivityBudget {
-  const budget = stringValue(value).toLowerCase();
-  return BUDGETS.has(budget) ? (budget as ActivityBudget) : "unknown";
+function parsePreferencePrompt(record: Record<string, unknown>) {
+  const direct = stringValue(record.preferencePrompt).trim();
+
+  if (direct) {
+    return direct.slice(0, 1200);
+  }
+
+  const legacy = record.preferences;
+  if (Array.isArray(legacy)) {
+    return legacy.map(stringValue).map((item) => item.trim()).filter(Boolean).join(", ");
+  }
+
+  return stringValue(legacy).trim().slice(0, 1200);
+}
+
+function parseDateRange(value: unknown): ActivityDateRange | undefined | false {
+  if (value == null || value === "") {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  const start = stringValue(record.start).trim();
+  const end = stringValue(record.end).trim();
+
+  if ((start && !isIsoDate(start)) || (end && !isIsoDate(end))) {
+    return false;
+  }
+
+  if (start && end && start > end) {
+    return false;
+  }
+
+  if (!start && !end) {
+    return undefined;
+  }
+
+  return { ...(start ? { start } : {}), ...(end ? { end } : {}) };
 }
 
 function parseSearchMode(value: unknown): ActivityDiscoveryRequest["searchMode"] {
@@ -57,24 +102,13 @@ function parseSearchMode(value: unknown): ActivityDiscoveryRequest["searchMode"]
     : "balanced";
 }
 
-function parsePreferences(value: unknown) {
-  if (Array.isArray(value)) {
-    return value
-      .map(stringValue)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 12);
+function isIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
   }
 
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 12);
-  }
-
-  return [];
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function stringValue(value: unknown) {

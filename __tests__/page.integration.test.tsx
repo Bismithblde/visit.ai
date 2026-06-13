@@ -57,17 +57,17 @@ describe("trip planner page integration", () => {
 
     expect(screen.getByText("Searching local activity sources")).toBeDefined();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/activities",
+      "/api/activities/discover",
       expect.objectContaining({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          city: "Lisbon",
+          cityOrLocation: "Lisbon",
           groupSize: 4,
-          budget: "unknown",
-          preferences: "quiet breakfasts and design stops",
+          preferencePrompt: "quiet breakfasts and design stops",
+          searchMode: "balanced",
         }),
       }),
     );
@@ -87,28 +87,30 @@ describe("trip planner page integration", () => {
         jsonResponse({
           activities: [
             {
-              name: "Hidden Design Walk",
-              description: "A source-backed small group activity in Lisbon.",
+              activityName: "Hidden Design Walk",
+              evidenceSummary: "A source-backed small group activity in Lisbon.",
+              reason: "Matches your walking preference",
               tags: ["design", "walking"],
               sourceUrls: [
                 "https://example.com/design-walk",
                 "https://example.com/lisbon-list",
                 "https://example.com/extra",
               ],
-              sourceConfidence: 0.82,
-              score: 0.82,
-              recommendationReason: "Matches your walking preference",
-              location: { address: "Baixa" },
+              confidenceScore: 0.82,
+              preferenceMatchScore: 0.82,
+              fitsPreference: true,
+              location: { label: "Baixa" },
             },
             {
-              name: "Quiet Breakfast Market",
-              description: "A calm morning market stop.",
+              activityName: "Quiet Breakfast Market",
+              evidenceSummary: "A calm morning market stop.",
+              reason: "Matches your food preference",
               tags: ["breakfast"],
               sourceUrls: ["https://example.com/market"],
-              sourceConfidence: 0.61,
-              score: 0.61,
-              recommendationReason: "Matches your food preference",
-              location: { address: "Alfama" },
+              confidenceScore: 0.61,
+              preferenceMatchScore: 0.61,
+              fitsPreference: true,
+              location: { label: "Alfama" },
             },
           ],
         }),
@@ -137,6 +139,51 @@ describe("trip planner page integration", () => {
       screen.getAllByText(/Activity: Hidden Design Walk at Time TBD/),
     ).toHaveLength(3);
     expect(screen.getByText("$2,609")).toBeDefined();
+  });
+
+  test("shows discovery diagnostics when no activities are returned", async () => {
+    vi.useFakeTimers();
+    const discovery = deferred<Response>();
+    const fetchMock = vi.fn(() => discovery.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Page />);
+
+    fireEvent.change(screen.getByLabelText("Group size"), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByLabelText("Destination"), {
+      target: { value: "Lisbon" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit trip preferences" }));
+
+    await act(async () => {
+      discovery.resolve(
+        jsonResponse({
+          queryPlan: ["best things to do in Lisbon reddit"],
+          activities: [],
+          debug: {
+            searchedQueries: ["best things to do in Lisbon reddit"],
+            visitedUrls: ["https://example.com/source"],
+            failedUrls: ["https://example.com/failure"],
+            timedOutStages: ["openai-social-extraction"],
+            sourceCounts: {
+              osm: 0,
+              reddit: 0,
+              web: 0,
+              merged: 0,
+              returned: 0,
+            },
+          },
+        }),
+      );
+      await discovery.promise;
+    });
+
+    expect(screen.getByText(/Discovery diagnostics/)).toBeDefined();
+    expect(screen.getByText("openai-social-extraction")).toBeDefined();
+    expect(screen.getByText("best things to do in Lisbon reddit")).toBeDefined();
+    expect(screen.getByText("https://example.com/failure")).toBeDefined();
   });
 });
 

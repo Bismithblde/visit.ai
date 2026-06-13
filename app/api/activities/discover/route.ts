@@ -2,6 +2,7 @@ import { discoverActivities, DiscoveryConfigError } from "@/lib/activity-discove
 import { parseDiscoveryRequest } from "@/lib/activity-discovery/validation";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: unknown;
