@@ -4,6 +4,7 @@ import { POST } from "@/app/api/activities/discover/route";
 const originalEnv = {
   TAVILY_API_KEY: process.env.TAVILY_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  GOOGLE_PLACES_API_KEY: process.env.GOOGLE_PLACES_API_KEY,
   OPENAI_ACTIVITY_MODEL: process.env.OPENAI_ACTIVITY_MODEL,
 };
 
@@ -11,12 +12,14 @@ describe("POST /api/activities/discover", () => {
   beforeEach(() => {
     process.env.TAVILY_API_KEY = "tavily-test-key";
     process.env.OPENAI_API_KEY = "openai-test-key";
-    process.env.OPENAI_ACTIVITY_MODEL = "gpt-5.5-mini";
+    process.env.GOOGLE_PLACES_API_KEY = "google-places-test-key";
+    process.env.OPENAI_ACTIVITY_MODEL = "gpt-4.1-mini";
   });
 
   afterEach(() => {
     process.env.TAVILY_API_KEY = originalEnv.TAVILY_API_KEY;
     process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY;
+    process.env.GOOGLE_PLACES_API_KEY = originalEnv.GOOGLE_PLACES_API_KEY;
     process.env.OPENAI_ACTIVITY_MODEL = originalEnv.OPENAI_ACTIVITY_MODEL;
     vi.unstubAllGlobals();
   });
@@ -99,7 +102,7 @@ describe("POST /api/activities/discover", () => {
           "Content-Type": "application/json",
         });
         const body = JSON.parse(String(init?.body));
-        expect(body.model).toBe("gpt-5.5-mini");
+        expect(body.model).toBe("gpt-4.1-mini");
         const instructions = String(body.instructions);
 
         if (instructions.includes("Generate concise Tavily search queries")) {
@@ -254,6 +257,174 @@ describe("POST /api/activities/discover", () => {
     });
     expect(body.queryPlan).toContain("cheap outdoor activities Queens reddit");
     expect(body.debug.searchedQueries).toEqual(body.queryPlan);
+  });
+
+  test("plans food plus boba into separate Google Places queries when isolated to Google", async () => {
+    const googleTextQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.startsWith("https://nominatim.openstreetmap.org/search")) {
+        return jsonResponse([
+          {
+            lat: "40.7654301",
+            lon: "-73.8174291",
+            boundingbox: ["40.7554301", "40.7754301", "-73.8274291", "-73.8074291"],
+          },
+        ]);
+      }
+
+      if (url === "https://api.openai.com/v1/responses") {
+        const body = JSON.parse(String(init?.body));
+        const instructions = String(body.instructions);
+
+        if (instructions.includes("Generate concise Tavily search queries")) {
+          return openAiJson({
+            queries: [
+              "best things to do in Flushing reddit",
+              "food and boba Flushing reddit",
+            ],
+            relevantOsmCategories: ["restaurant", "cafe"],
+            inferredTags: ["food", "bubble tea"],
+            intentProfile: {
+              primaryGoal: "food + boba",
+              concepts: [
+                { term: "food", weight: 0.75, type: "should" },
+                { term: "boba", weight: 0.75, type: "should" },
+              ],
+              placeTypes: [],
+              activityTypes: [],
+              attributes: [],
+              exclusions: [],
+              reviewSearchTerms: ["food", "boba"],
+              googlePlaceSubjects: ["bubble tea", "food"],
+              googlePlaceQueries: ["bubble tea", "food"],
+              minimumPreferenceScore: 0.32,
+              searchAreaKind: "neighborhood",
+              recommendedRadiusMeters: 5000,
+              radiusReason: "Neighborhood food and beverage search.",
+            },
+          });
+        }
+
+        if (instructions.includes("Verify and rerank")) {
+          return openAiJson({
+            activities: [
+              {
+                activityName: "Bubble Tea Stop at Tiger Sugar",
+                fitsPreference: true,
+                reason: "Matches the bubble tea request.",
+                confidenceScore: 0.9,
+                preferenceMatchScore: 0.95,
+                missingInfo: [],
+                possibleConcerns: [],
+              },
+              {
+                activityName: "Food Stop at New World Mall Food Court",
+                fitsPreference: true,
+                reason: "Matches the food request.",
+                confidenceScore: 0.85,
+                preferenceMatchScore: 0.9,
+                missingInfo: [],
+                possibleConcerns: [],
+              },
+            ],
+          });
+        }
+
+        throw new Error(`Unexpected OpenAI instructions: ${instructions}`);
+      }
+
+      if (url === "https://places.googleapis.com/v1/places:searchText") {
+        const body = JSON.parse(String(init?.body));
+        googleTextQueries.push(body.textQuery);
+
+        if (body.textQuery === "bubble tea") {
+          return jsonResponse({
+            places: [
+              {
+                id: "bubble-1",
+                displayName: { text: "Tiger Sugar" },
+                formattedAddress: "Tiger Sugar, Flushing, NY",
+                types: ["bubble_tea_store", "cafe", "food"],
+                primaryType: "bubble_tea_store",
+                location: { latitude: 40.758, longitude: -73.829 },
+                rating: 4.6,
+                userRatingCount: 300,
+              },
+            ],
+          });
+        }
+
+        if (body.textQuery === "food") {
+          return jsonResponse({
+            places: [
+              {
+                id: "food-1",
+                displayName: { text: "New World Mall Food Court" },
+                formattedAddress: "New World Mall, Flushing, NY",
+                types: ["restaurant", "food"],
+                primaryType: "restaurant",
+                location: { latitude: 40.759, longitude: -73.83 },
+                rating: 4.4,
+                userRatingCount: 500,
+              },
+            ],
+          });
+        }
+
+        throw new Error(`Unexpected Google Places query: ${body.textQuery}`);
+      }
+
+      if (url.startsWith("https://places.googleapis.com/v1/places/")) {
+        const id = decodeURIComponent(url.replace("https://places.googleapis.com/v1/places/", ""));
+        return jsonResponse({
+          id,
+          displayName: {
+            text: id === "bubble-1" ? "Tiger Sugar" : "New World Mall Food Court",
+          },
+          formattedAddress: "Flushing, NY",
+          types: id === "bubble-1" ? ["bubble_tea_store", "food"] : ["restaurant", "food"],
+          primaryType: id === "bubble-1" ? "bubble_tea_store" : "restaurant",
+          location: { latitude: 40.758, longitude: -73.829 },
+          rating: id === "bubble-1" ? 4.6 : 4.4,
+          userRatingCount: id === "bubble-1" ? 300 : 500,
+          reviews: [],
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      jsonRequest({
+        cityOrLocation: "Flushing, NY",
+        groupSize: 5,
+        preferencePrompt: "food + boba",
+        searchMode: "balanced",
+        debugProviders: {
+          tavily: false,
+          googlePlaces: true,
+          osm: false,
+        },
+      }),
+    );
+    const body = await expectJson(response, 200);
+
+    expect(googleTextQueries).toEqual(["bubble tea", "food"]);
+    expect(body.debug.timedOutStages).not.toContain("openai-query-plan");
+    expect(body.debug.stageErrors ?? []).toEqual([]);
+    expect(body.debug.intentProfile.googlePlaceSubjects).toEqual(["bubble tea", "food"]);
+    expect(body.debug.intentProfile.googlePlaceQueries).toEqual(["bubble tea", "food"]);
+    expect(body.debug.sourceCounts.googlePlacesCalls).toBeGreaterThanOrEqual(2);
+    expect(body.activities.map((activity: { activityName: string }) => activity.activityName)).toEqual(
+      expect.arrayContaining([
+        "Bubble Tea Stop at Tiger Sugar",
+        "Food Stop at New World Mall Food Court",
+      ]),
+    );
   });
 });
 

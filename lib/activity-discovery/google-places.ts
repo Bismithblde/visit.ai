@@ -1,4 +1,3 @@
-import { intentTerms } from "./intent";
 import type { BusinessSearchArea } from "./search-area";
 import type {
   ActivityDiscoveryRequest,
@@ -96,11 +95,15 @@ interface GooglePlacesLocationConstraint {
 export interface GooglePlacesRetrievalResult {
   candidates: OSMCandidate[];
   debug: {
+    status: "completed" | "skipped" | "timed_out" | "failed";
+    skipReason?: string;
     calls: number;
     estimatedCredits: number;
     rawCandidates: number;
     dedupedCandidates: number;
     queries: string[];
+    identifiedSubjects: string[];
+    rejectedCombinedQueries: string[];
     requestFilters: string[];
     requestBiases: string[];
     errors: string[];
@@ -125,14 +128,40 @@ export async function retrieveGooglePlacesCandidates({
   intent: IntentProfile;
   searchArea: BusinessSearchArea;
 }): Promise<GooglePlacesRetrievalResult> {
-  if (!apiKey || !location.latitude || !location.longitude) {
-    return emptyGooglePlacesResult();
+  if (!apiKey) {
+    return emptyGooglePlacesResult("missing GOOGLE_PLACES_API_KEY");
   }
 
-  const specs = buildGooglePlacesSearchSpecs(request, intent).slice(
+  if (!location.latitude || !location.longitude) {
+    return emptyGooglePlacesResult("missing resolved latitude/longitude");
+  }
+
+  const searchPlan = buildGooglePlacesSearchSpecs(request, intent);
+  const specs = searchPlan.specs.slice(
     0,
     googlePlacesCallLimit(request.searchMode),
   );
+
+  if (specs.length === 0) {
+    return {
+      candidates: [],
+      debug: {
+        status: "skipped",
+        skipReason: "no Google Places subjects or queries returned by LLM",
+        calls: 0,
+        estimatedCredits: 0,
+        rawCandidates: 0,
+        dedupedCandidates: 0,
+        queries: [],
+        identifiedSubjects: searchPlan.identifiedSubjects,
+        rejectedCombinedQueries: searchPlan.rejectedCombinedQueries,
+        requestFilters: [],
+        requestBiases: [],
+        errors: [],
+      },
+    };
+  }
+
   const locationConstraint = googlePlacesLocationConstraint(searchArea);
   const settled = await Promise.allSettled(
     specs.map((spec) =>
@@ -158,11 +187,14 @@ export async function retrieveGooglePlacesCandidates({
   return {
     candidates,
     debug: {
+      status: errors.length + details.errors.length > 0 ? "failed" : "completed",
       calls: specs.length + details.calls,
       estimatedCredits: specs.length + details.calls,
       rawCandidates: rawCandidates.length,
       dedupedCandidates: candidates.length,
       queries: specs.map((spec) => spec.label),
+      identifiedSubjects: searchPlan.identifiedSubjects,
+      rejectedCombinedQueries: searchPlan.rejectedCombinedQueries,
       requestFilters: specs.map(() => JSON.stringify(locationConstraint.filter)),
       requestBiases: specs.map(() => JSON.stringify(locationConstraint.bias)),
       errors: [...errors, ...details.errors],
@@ -174,36 +206,92 @@ function buildGooglePlacesSearchSpecs(
   request: ActivityDiscoveryRequest,
   intent: IntentProfile,
 ) {
-  const candidates = googlePlaceSearchSubjects(request, intent);
+  const plan = googlePlaceSearchSubjects(intent);
 
-  const queries = candidates.map((term) => ({
+  const specs = plan.queries.map((term) => ({
     query: term,
     label: term,
   }));
 
-  return queries.length > 0
-    ? queries
-    : [{ query: "places to visit", label: "places to visit" }];
+  return {
+    ...plan,
+    specs,
+  };
 }
 
-function googlePlaceSearchSubjects(
-  request: ActivityDiscoveryRequest,
-  intent: IntentProfile,
-) {
-  const rawSubjects = [
-    request.preferencePrompt,
-    intent.primaryGoal,
-    ...intentTerms(intent),
-    ...intent.placeTypes,
-    ...intent.activityTypes,
-    ...intent.reviewSearchTerms,
-  ].flatMap(extractSubjectTerms);
+function googlePlaceSearchSubjects(intent: IntentProfile) {
+  const identifiedSubjects = cleanGooglePlaceQueries(intent.googlePlaceSubjects ?? []);
+  const explicitQueryCandidates = cleanGooglePlaceQueries(intent.googlePlaceQueries ?? []);
+  const rejectedCombinedQueries = explicitQueryCandidates.filter((query) =>
+    combinesMultipleSubjects(query, identifiedSubjects),
+  );
+  const explicitQueries = explicitQueryCandidates.filter(
+    (query) => !rejectedCombinedQueries.includes(query),
+  );
 
-  return collapseOverlappingSubjects(uniqueStrings(rawSubjects)).slice(0, 10);
+  return {
+    identifiedSubjects,
+    rejectedCombinedQueries,
+    queries: uniqueStrings([...identifiedSubjects, ...explicitQueries]).slice(0, 10),
+  };
+}
+
+function cleanGooglePlaceQueries(queries: string[]) {
+  return queries
+    .map((query) => normalizeQueryTerm(query))
+    .filter((query) => query && isGooglePlaceQuery(query));
+}
+
+function isGooglePlaceQuery(query: string) {
+  if (query.length > 80) {
+    return false;
+  }
+
+  return !/\b(reddit|blog|review|reviews|best things to do|hidden gems)\b/i.test(query);
+}
+
+function combinesMultipleSubjects(query: string, subjects: string[]) {
+  if (subjects.length < 2) {
+    return false;
+  }
+
+  const normalizedQuery = normalizeText(query);
+  return (
+    subjects.filter((subject) => {
+      const normalizedSubject = normalizeText(subject);
+      return normalizedSubject && normalizedQuery.includes(normalizedSubject);
+    }).length > 1
+  );
+}
+
+function expandSearchSubjects(
+  subjects: string[],
+  searchMode: ActivityDiscoveryRequest["searchMode"],
+) {
+  if (searchMode === "fast") {
+    return subjects;
+  }
+
+  const expanded: string[] = [];
+  for (const subject of subjects) {
+    expanded.push(subject);
+
+    if (subject === "bubble tea") {
+      expanded.push(
+        "boba tea",
+        "boba shop",
+        "milk tea",
+        "bubble tea cafe",
+        "tea shop",
+      );
+    }
+  }
+
+  return uniqueStrings(expanded);
 }
 
 function extractSubjectTerms(value: string) {
-  const text = normalizeText(value);
+  const text = normalizeTextForSubjectSplitting(value);
   if (!text) {
     return [];
   }
@@ -219,7 +307,7 @@ function extractSubjectTerms(value: string) {
     }
   }
 
-  for (const chunk of remainder.split(/\b(?:and|or|with|for|near|in|around|plus)\b/)) {
+  for (const chunk of remainder.split(/\s*(?:\+|,|;|\b(?:and|or|with|for|near|in|around|plus)\b)\s*/)) {
     const tokens = chunk
       .split(" ")
       .map((token) => token.trim())
@@ -628,15 +716,19 @@ function googlePlacesDetailsLimit(searchMode: ActivityDiscoveryRequest["searchMo
   }
 }
 
-function emptyGooglePlacesResult(): GooglePlacesRetrievalResult {
+function emptyGooglePlacesResult(skipReason: string): GooglePlacesRetrievalResult {
   return {
     candidates: [],
     debug: {
+      status: "skipped",
+      skipReason,
       calls: 0,
       estimatedCredits: 0,
       rawCandidates: 0,
       dedupedCandidates: 0,
       queries: [],
+      identifiedSubjects: [],
+      rejectedCombinedQueries: [],
       requestFilters: [],
       requestBiases: [],
       errors: [],
@@ -653,11 +745,21 @@ function normalizeQueryTerm(value: string) {
 }
 
 function normalizeText(value: string) {
-  return value
+  return String(value ?? "")
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[_:/-]+/g, " ")
     .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTextForSubjectSplitting(value: string) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[_:/-]+/g, " ")
+    .replace(/[^a-z0-9 +,;]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -667,7 +769,7 @@ function cleanText(value: string) {
 }
 
 function uniqueStrings(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
 }
 
 function numberOrUndefined(value: unknown) {
@@ -740,6 +842,7 @@ const SINGLE_SUBJECT_WORDS = new Set([
   "croffle",
   "dessert",
   "desserts",
+  "food",
   "gallery",
   "karaoke",
   "market",

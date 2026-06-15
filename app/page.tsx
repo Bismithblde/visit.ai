@@ -49,6 +49,8 @@ interface ActivityOption {
   tags: string[];
   sourceUrls: string[];
   confidence: number | null;
+  rating?: number | null;
+  reviewCount?: number;
   needsVerification: boolean;
 }
 
@@ -71,6 +73,8 @@ interface DiscoveredActivity {
   sourceUrls: string[];
   confidenceScore: number;
   preferenceMatchScore: number;
+  rating?: number;
+  reviewCount?: number;
   fitsPreference: boolean;
   location?: {
     label?: string;
@@ -84,6 +88,12 @@ interface DiscoveryResponse {
   candidates?: ActivityCandidate[];
   queryPlan?: string[];
   debug?: DiscoveryDebug;
+}
+
+interface DebugProviders {
+  tavily: boolean;
+  googlePlaces: boolean;
+  osm: boolean;
 }
 
 interface DiscoveryDebug {
@@ -270,6 +280,11 @@ export default function Page() {
   const [activityOptions, setActivityOptions] = useState<ActivityOption[]>(activities);
   const [discoveryDebug, setDiscoveryDebug] = useState<DiscoveryDebug | null>(null);
   const [discoveryQueryPlan, setDiscoveryQueryPlan] = useState<string[]>([]);
+  const [debugProviders, setDebugProviders] = useState<DebugProviders>({
+    tavily: true,
+    googlePlaces: true,
+    osm: true,
+  });
   const [hasDiscoveredActivities, setHasDiscoveredActivities] = useState(false);
   const [selectedHotel, setSelectedHotel] = useState(hotels[0].id);
   const [selectedRestaurants, setSelectedRestaurants] = useState([
@@ -387,6 +402,13 @@ export default function Page() {
     }
   }
 
+  function toggleDebugProvider(provider: keyof DebugProviders) {
+    setDebugProviders((current) => ({
+      ...current,
+      [provider]: !current[provider],
+    }));
+  }
+
   async function submitFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -429,6 +451,7 @@ export default function Page() {
           dateRange: getRequestDateRange(calendarValue),
           preferencePrompt: personalization,
           searchMode: "balanced",
+          debugProviders,
         }),
       });
 
@@ -542,6 +565,26 @@ export default function Page() {
               </svg>
             </button>
           </div>
+          <fieldset className="flex flex-wrap gap-3 rounded-[1.1rem] border border-[#e2e8df] bg-[#fffdf8] px-4 py-3 md:col-span-4">
+            <legend className="px-1 text-xs font-bold uppercase tracking-[0.12em] text-[#718077]">
+              Debug providers
+            </legend>
+            <DebugProviderToggle
+              checked={debugProviders.tavily}
+              label="Tavily"
+              onChange={() => toggleDebugProvider("tavily")}
+            />
+            <DebugProviderToggle
+              checked={debugProviders.googlePlaces}
+              label="Google Places"
+              onChange={() => toggleDebugProvider("googlePlaces")}
+            />
+            <DebugProviderToggle
+              checked={debugProviders.osm}
+              label="OSM"
+              onChange={() => toggleDebugProvider("osm")}
+            />
+          </fieldset>
         </form>
 
         {formError && (
@@ -1046,28 +1089,32 @@ function formatIsoDate(date: Date) {
 
 function mapDiscoveryActivities(response: DiscoveryResponse) {
   if (Array.isArray(response.activities)) {
-    return response.activities.map((activity, index) => ({
-      id: `${slugify(activity.activityName)}-${index}`,
-      name: activity.activityName,
-      description: activity.reason || activity.evidenceSummary,
-      time: null,
-      location:
-        typeof activity.location?.latitude === "number" &&
-        typeof activity.location.longitude === "number"
-          ? {
-              latitude: activity.location.latitude,
-              longitude: activity.location.longitude,
-            }
-          : null,
-      price: 0,
-      priceLabel: "Price TBD",
-      timeLabel: "Time TBD",
-      locationLabel: formatDiscoveredActivityLocation(activity),
-      tags: activity.tags,
-      sourceUrls: activity.sourceUrls,
-      confidence: activity.preferenceMatchScore || activity.confidenceScore,
-      needsVerification: true,
-    }));
+    return sortActivitiesByRating(
+      response.activities.map((activity, index) => ({
+        id: `${slugify(activity.activityName)}-${index}`,
+        name: activity.activityName,
+        description: activity.reason || activity.evidenceSummary,
+        time: null,
+        location:
+          typeof activity.location?.latitude === "number" &&
+          typeof activity.location.longitude === "number"
+            ? {
+                latitude: activity.location.latitude,
+                longitude: activity.location.longitude,
+              }
+            : null,
+        price: 0,
+        priceLabel: "Price TBD",
+        timeLabel: "Time TBD",
+        locationLabel: formatDiscoveredActivityLocation(activity),
+        tags: activity.tags,
+        sourceUrls: activity.sourceUrls,
+        confidence: activity.preferenceMatchScore || activity.confidenceScore,
+        rating: typeof activity.rating === "number" ? activity.rating : null,
+        reviewCount: activity.reviewCount,
+        needsVerification: true,
+      })),
+    );
   }
 
   return mapActivityCandidates(response.candidates ?? []);
@@ -1087,8 +1134,22 @@ function mapActivityCandidates(candidates: ActivityCandidate[]) {
     tags: candidate.tags,
     sourceUrls: candidate.sourceUrls,
     confidence: candidate.confidence,
+    rating: null,
     needsVerification: candidate.needsVerification,
   }));
+}
+
+function sortActivitiesByRating(activities: ActivityOption[]) {
+  return [...activities].sort((first, second) => {
+    const firstRating = first.rating ?? -1;
+    const secondRating = second.rating ?? -1;
+
+    if (secondRating !== firstRating) {
+      return secondRating - firstRating;
+    }
+
+    return (second.confidence ?? 0) - (first.confidence ?? 0);
+  });
 }
 
 function isDiscoveryResponse(value: unknown): value is DiscoveryResponse {
@@ -1156,6 +1217,12 @@ function ActivityOptionRow({
           {activity.confidence !== null && (
             <span className="text-xs font-semibold text-[#718077]">
               {Math.round(activity.confidence * 100)}% match
+            </span>
+          )}
+          {activity.rating != null && (
+            <span className="text-xs font-semibold text-[#718077]">
+              {activity.rating.toFixed(1)} stars
+              {activity.reviewCount ? ` (${activity.reviewCount})` : ""}
             </span>
           )}
         </div>
@@ -1302,6 +1369,28 @@ function Field({
         type={type}
         value={value}
       />
+    </label>
+  );
+}
+
+function DebugProviderToggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: () => void;
+}) {
+  return (
+    <label className="inline-flex items-center gap-2 rounded-[0.75rem] border border-[#e2e8df] bg-white px-3 py-2 text-sm font-semibold text-[#202923]">
+      <input
+        checked={checked}
+        className="h-4 w-4 accent-[#1c241f]"
+        onChange={onChange}
+        type="checkbox"
+      />
+      {label}
     </label>
   );
 }

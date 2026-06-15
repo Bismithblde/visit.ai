@@ -3,6 +3,7 @@ import { collectDiscoveryContent } from "@/lib/activity-discovery/content-collec
 import { retrieveGooglePlacesCandidates } from "@/lib/activity-discovery/google-places";
 import { fallbackIntentProfile, filterAndRankOsmCandidates } from "@/lib/activity-discovery/intent";
 import { buildMergedActivities, finalRankAndDiversify } from "@/lib/activity-discovery/merge-rank";
+import { OpenAIActivityClient } from "@/lib/activity-discovery/openai-activity";
 import {
   retrieveOsmCandidates,
   retrieveTargetedOsmCandidates,
@@ -12,6 +13,7 @@ import { parseDiscoveryRequest } from "@/lib/activity-discovery/validation";
 import type {
   ActivityDiscoveryRequest,
   DiscoveryTool,
+  IntentProfile,
   OSMCandidate,
   SocialCandidate,
 } from "@/lib/activity-discovery/types";
@@ -70,6 +72,11 @@ describe("activity discovery edge cases", () => {
         dateRange: { start: "2026-09-01", end: "2026-09-10" },
         preferencePrompt: "cheap outdoor",
         searchMode: "DEEP",
+        debugProviders: {
+          tavily: false,
+          googlePlaces: true,
+          osm: false,
+        },
       }),
     ).toEqual({
       ok: true,
@@ -79,8 +86,91 @@ describe("activity discovery edge cases", () => {
         dateRange: { start: "2026-09-01", end: "2026-09-10" },
         preferencePrompt: "cheap outdoor",
         searchMode: "deep",
+        debugProviders: {
+          tavily: false,
+          googlePlaces: true,
+          osm: false,
+        },
       },
     });
+  });
+
+  test("OpenAI query planning orchestrates food plus boba into separate Google Places subjects", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://api.openai.com/v1/responses");
+      const body = JSON.parse(String(init?.body));
+      const inputPayload = JSON.parse(String(body.input));
+
+      expect(inputPayload.request.preferencePrompt).toBe("food + boba");
+      expect(String(body.instructions)).toContain("boba + food");
+      expect(String(body.instructions)).toContain("bubble tea");
+      expect(body.text.format.schema.properties.queries).not.toHaveProperty("minItems");
+      expect(body.text.format.schema.properties.queries).not.toHaveProperty("maxItems");
+
+      return openAiJson({
+        queries: [
+          "best things to do in Flushing reddit",
+          "food and boba Flushing reddit",
+        ],
+        relevantOsmCategories: ["restaurant", "cafe"],
+        inferredTags: ["food", "bubble tea"],
+        intentProfile: {
+          primaryGoal: "food + boba",
+          concepts: [
+            { term: "food", weight: 0.75, type: "should" },
+            { term: "boba", weight: 0.75, type: "should" },
+          ],
+          placeTypes: [],
+          activityTypes: [],
+          attributes: [],
+          exclusions: [],
+          reviewSearchTerms: ["food", "boba"],
+          googlePlaceSubjects: ["bubble tea", "food"],
+          googlePlaceQueries: ["bubble tea", "food"],
+          minimumPreferenceScore: 0.32,
+          searchAreaKind: "neighborhood",
+          recommendedRadiusMeters: 5000,
+          radiusReason: "Neighborhood food and beverage search.",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpenAIActivityClient("openai-test-key", "gpt-4.1-mini");
+    const plan = await client.generateQueryPlan({
+      ...request,
+      cityOrLocation: "Flushing, NY",
+      preferencePrompt: "food + boba",
+    });
+
+    expect(plan.intentProfile.googlePlaceSubjects).toEqual(["bubble tea", "food"]);
+    expect(plan.intentProfile.googlePlaceQueries).toEqual(["bubble tea", "food"]);
+  });
+
+  test("OpenAI query planning surfaces response body for bad request failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: {
+              message: "Invalid schema for response_format: unsupported keyword minItems.",
+            },
+          },
+          400,
+        ),
+      ),
+    );
+
+    const client = new OpenAIActivityClient("openai-test-key", "gpt-4.1-mini");
+
+    await expect(
+      client.generateQueryPlan({
+        ...request,
+        cityOrLocation: "Flushing, NY",
+        preferencePrompt: "food + boba",
+      }),
+    ).rejects.toThrow("unsupported keyword minItems");
   });
 
   test("normalizes OSM geocode and Overpass results into activity candidates", async () => {
@@ -311,14 +401,19 @@ describe("activity discovery edge cases", () => {
         number,
       ],
     };
+    const intent = {
+      ...fallbackIntentProfile(bubbleTeaRequest),
+      googlePlaceSubjects: ["bubble tea", "croffle", "asian desserts"],
+      googlePlaceQueries: ["bubble tea", "croffle", "asian desserts"],
+    };
     const result = await retrieveGooglePlacesCandidates({
       apiKey: "google-places-test-key",
       request: bubbleTeaRequest,
       location,
-      intent: fallbackIntentProfile(bubbleTeaRequest),
+      intent,
       searchArea: resolveBusinessSearchArea(
         location,
-        fallbackIntentProfile(bubbleTeaRequest),
+        intent,
         "balanced",
       ),
     });
@@ -357,7 +452,7 @@ describe("activity discovery edge cases", () => {
     expect(textQueries).toHaveLength(3);
   });
 
-  test("Google Places query planning drops filler words and keeps only specific subjects", async () => {
+  test("Google Places query planning uses LLM-identified subjects only", async () => {
     const textQueries: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -401,8 +496,267 @@ describe("activity discovery edge cases", () => {
         number,
       ],
     };
+    const intent = {
+      ...fallbackIntentProfile(bubbleTeaRequest),
+      googlePlaceSubjects: ["bubble tea"],
+      googlePlaceQueries: ["bubble tea"],
+    };
     const result = await retrieveGooglePlacesCandidates({
       apiKey: "google-places-test-key",
+      request: bubbleTeaRequest,
+      location,
+      intent,
+      searchArea: resolveBusinessSearchArea(
+        location,
+        intent,
+        "balanced",
+      ),
+    });
+
+    expect(result.debug.queries).toEqual(["bubble tea"]);
+    expect(textQueries).toEqual(["bubble tea"]);
+    expect(result.debug.calls).toBe(2);
+  });
+
+  test("Google Places runs multiple LLM-orchestrated bubble tea queries", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        return jsonResponse(googlePlaceDetails("bubble-1"));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      return jsonResponse({
+        places: [
+          {
+            id: `place-${textQueries.length}`,
+            displayName: { text: `Bubble Tea ${textQueries.length}` },
+            formattedAddress: "Flushing, NY",
+            types: ["bubble_tea_store", "food"],
+            primaryType: "bubble_tea_store",
+            location: {
+              latitude: 40.75 + textQueries.length / 1000,
+              longitude: -73.82,
+            },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bubbleTeaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "only bubble tea.",
+      searchMode: "balanced",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+
+    const intent = {
+      ...fallbackIntentProfile(bubbleTeaRequest),
+      googlePlaceSubjects: [
+        "bubble tea",
+        "boba tea",
+        "boba shop",
+        "milk tea",
+        "bubble tea cafe",
+        "tea shop",
+      ],
+      googlePlaceQueries: [
+        "bubble tea",
+        "boba tea",
+        "boba shop",
+        "milk tea",
+        "bubble tea cafe",
+        "tea shop",
+      ],
+    };
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: bubbleTeaRequest,
+      location,
+      intent,
+      searchArea: resolveBusinessSearchArea(
+        location,
+        intent,
+        "balanced",
+      ),
+    });
+
+    expect(result.debug.queries).toEqual([
+      "bubble tea",
+      "boba tea",
+      "boba shop",
+      "milk tea",
+      "bubble tea cafe",
+      "tea shop",
+    ]);
+    expect(textQueries).toEqual(result.debug.queries);
+    expect(result.debug.rawCandidates).toBe(6);
+  });
+
+  test("Google Places sends separate LLM-orchestrated queries for each subject", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        return jsonResponse(googlePlaceDetails("bubble-1"));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      return jsonResponse({
+        places: [
+          {
+            id: "food-boba-1",
+            displayName: { text: "Food Court Boba" },
+            formattedAddress: "Flushing, NY",
+            types: ["restaurant", "bubble_tea_store", "food"],
+            primaryType: "restaurant",
+            location: { latitude: 40.75, longitude: -73.82 },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const foodBobaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "food + boba",
+      searchMode: "balanced",
+    };
+    const intent = {
+      ...fallbackIntentProfile(foodBobaRequest),
+      googlePlaceSubjects: ["food", "boba"],
+      googlePlaceQueries: ["food + boba"],
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: foodBobaRequest,
+      location,
+      intent,
+      searchArea: resolveBusinessSearchArea(location, intent, "balanced"),
+    });
+
+    expect(result.debug.queries.slice(0, 2)).toEqual(["food", "boba"]);
+    expect(result.debug.identifiedSubjects).toEqual(["food", "boba"]);
+    expect(result.debug.rejectedCombinedQueries).toEqual(["food + boba"]);
+    expect(textQueries.slice(0, 2)).toEqual(["food", "boba"]);
+    expect(textQueries).not.toContain("food + boba");
+  });
+
+  test("Google Places skips when LLM subjects are absent instead of using heuristic fallback", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        return jsonResponse(googlePlaceDetails("bubble-1"));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      return jsonResponse({
+        places: [
+          {
+            id: `fallback-${textQueries.length}`,
+            displayName: { text: `Fallback ${textQueries.length}` },
+            formattedAddress: "Flushing, NY",
+            types: ["food"],
+            primaryType: "restaurant",
+            location: { latitude: 40.75, longitude: -73.82 },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const foodBobaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "boba + food",
+      searchMode: "balanced",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: foodBobaRequest,
+      location,
+      intent: fallbackIntentProfile(foodBobaRequest),
+      searchArea: resolveBusinessSearchArea(
+        location,
+        fallbackIntentProfile(foodBobaRequest),
+        "balanced",
+      ),
+    });
+
+    expect(result.debug).toMatchObject({
+      status: "skipped",
+      skipReason: "no Google Places subjects or queries returned by LLM",
+      identifiedSubjects: [],
+      queries: [],
+    });
+    expect(textQueries).toEqual([]);
+  });
+
+  test("Google Places reports a missing API key as an explicit skip reason", async () => {
+    const bubbleTeaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "bubble tea",
+      searchMode: "fast",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: undefined,
       request: bubbleTeaRequest,
       location,
       intent: fallbackIntentProfile(bubbleTeaRequest),
@@ -413,9 +767,81 @@ describe("activity discovery edge cases", () => {
       ),
     });
 
-    expect(result.debug.queries).toEqual(["bubble tea"]);
+    expect(result.candidates).toEqual([]);
+    expect(result.debug).toMatchObject({
+      status: "skipped",
+      skipReason: "missing GOOGLE_PLACES_API_KEY",
+      calls: 0,
+      errors: [],
+    });
+  });
+
+  test("Google Places tolerates non-string intent terms from model output", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        return jsonResponse(googlePlaceDetails("bubble-1"));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      return jsonResponse({
+        places: [
+          {
+            id: "bubble-1",
+            displayName: { text: "Tiger Sugar" },
+            formattedAddress: "Tiger Sugar, Flushing, NY",
+            types: ["bubble_tea_store", "food"],
+            primaryType: "bubble_tea_store",
+            location: { latitude: 40.75, longitude: -73.82 },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bubbleTeaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "I only want to drink bubble tea.",
+      searchMode: "fast",
+    };
+    const fallback = fallbackIntentProfile(bubbleTeaRequest);
+    const malformedIntent = {
+      ...fallback,
+      concepts: [
+        { term: { text: "bubble tea" }, weight: 0.8, type: "should" },
+      ],
+      reviewSearchTerms: [{ text: "bubble tea" }],
+      googlePlaceSubjects: ["bubble tea"],
+      googlePlaceQueries: ["bubble tea"],
+    } as unknown as IntentProfile;
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: bubbleTeaRequest,
+      location,
+      intent: malformedIntent,
+      searchArea: resolveBusinessSearchArea(location, malformedIntent, "balanced"),
+    });
+
+    expect(result.debug.status).toBe("completed");
+    expect(result.debug.errors).toEqual([]);
+    expect(result.candidates).toHaveLength(1);
     expect(textQueries).toEqual(["bubble tea"]);
-    expect(result.debug.calls).toBe(2);
   });
 
   test("Google Places records provider errors instead of looking like empty results", async () => {
@@ -447,19 +873,25 @@ describe("activity discovery edge cases", () => {
         number,
       ],
     };
+    const intent = {
+      ...fallbackIntentProfile(bubbleTeaRequest),
+      googlePlaceSubjects: ["bubble tea"],
+      googlePlaceQueries: ["bubble tea"],
+    };
     const result = await retrieveGooglePlacesCandidates({
       apiKey: "google-places-test-key",
       request: bubbleTeaRequest,
       location,
-      intent: fallbackIntentProfile(bubbleTeaRequest),
+      intent,
       searchArea: resolveBusinessSearchArea(
         location,
-        fallbackIntentProfile(bubbleTeaRequest),
+        intent,
         "balanced",
       ),
     });
 
     expect(result.candidates).toEqual([]);
+    expect(result.debug.status).toBe("failed");
     expect(result.debug.errors[0]).toContain("Google Places Text Search failed");
     expect(result.debug.errors[0]).toContain("Invalid field mask");
   });
@@ -675,6 +1107,16 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+function openAiJson(body: unknown) {
+  return jsonResponse({
+    output: [
+      {
+        content: [{ type: "output_text", text: JSON.stringify(body) }],
+      },
+    ],
   });
 }
 

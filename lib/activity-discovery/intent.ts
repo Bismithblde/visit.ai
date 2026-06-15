@@ -26,6 +26,8 @@ export function fallbackIntentProfile(
     attributes: [],
     exclusions: [],
     reviewSearchTerms: terms.slice(0, 8),
+    googlePlaceSubjects: [],
+    googlePlaceQueries: [],
     minimumPreferenceScore: DEFAULT_MINIMUM_PREFERENCE_SCORE,
     searchAreaKind: "neighborhood",
     recommendedRadiusMeters: 5000,
@@ -92,6 +94,7 @@ export function intentTerms(intent: IntentProfile) {
     ...intent.activityTypes,
     ...intent.attributes,
     ...intent.reviewSearchTerms,
+    ...intent.googlePlaceSubjects,
   ]).slice(0, 12);
 }
 
@@ -198,7 +201,7 @@ function normalizeText(value: string) {
 }
 
 function uniqueStrings(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
 }
 
 function clamp(value: number) {

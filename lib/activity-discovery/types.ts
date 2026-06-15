@@ -9,6 +9,13 @@ export interface ActivityDiscoveryRequest {
   dateRange?: ActivityDateRange;
   preferencePrompt: string;
   searchMode: "fast" | "balanced" | "deep";
+  debugProviders?: Partial<DiscoveryProviderToggles>;
+}
+
+export interface DiscoveryProviderToggles {
+  tavily: boolean;
+  googlePlaces: boolean;
+  osm: boolean;
 }
 
 export type DiscoverySource =
@@ -73,6 +80,7 @@ export interface DiscoveryDebug {
   visitedUrls: string[];
   failedUrls: string[];
   timedOutStages: string[];
+  stageErrors?: string[];
   intentProfile?: IntentProfile;
   sourceCounts: {
     googlePlaces: number;
@@ -168,6 +176,8 @@ export interface IntentProfile {
   attributes: string[];
   exclusions: string[];
   reviewSearchTerms: string[];
+  googlePlaceSubjects: string[];
+  googlePlaceQueries: string[];
   minimumPreferenceScore: number;
   searchAreaKind: "neighborhood" | "city" | "metro" | "region" | "unknown";
   recommendedRadiusMeters: number;

@@ -40,6 +40,8 @@ export function parseDiscoveryRequest(input: unknown): ValidationResult {
     };
   }
 
+  const debugProviders = parseDebugProviders(record.debugProviders);
+
   return {
     ok: true,
     request: {
@@ -48,6 +50,7 @@ export function parseDiscoveryRequest(input: unknown): ValidationResult {
       dateRange,
       preferencePrompt: parsePreferencePrompt(record),
       searchMode: parseSearchMode(record.searchMode),
+      ...(debugProviders ? { debugProviders } : {}),
     },
   };
 }
@@ -100,6 +103,21 @@ function parseSearchMode(value: unknown): ActivityDiscoveryRequest["searchMode"]
   return SEARCH_MODES.has(searchMode)
     ? (searchMode as ActivityDiscoveryRequest["searchMode"])
     : "balanced";
+}
+
+function parseDebugProviders(
+  value: unknown,
+): ActivityDiscoveryRequest["debugProviders"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    tavily: record.tavily !== false,
+    googlePlaces: record.googlePlaces !== false,
+    osm: record.osm !== false,
+  };
 }
 
 function isIsoDate(value: string) {

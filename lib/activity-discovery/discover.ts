@@ -7,14 +7,21 @@ import {
   intentTerms,
   selectOsmCandidatesForReview,
 } from "./intent";
-import { retrieveGooglePlacesCandidates } from "./google-places";
+import {
+  retrieveGooglePlacesCandidates,
+  type GooglePlacesRetrievalResult,
+} from "./google-places";
 import {
   fallbackQueries,
   fallbackVerify,
   OpenAIActivityClient,
 } from "./openai-activity";
 import { buildMergedActivities, finalRankAndDiversify } from "./merge-rank";
-import { retrieveOsmCandidates, retrieveTargetedOsmCandidates } from "./osm";
+import {
+  resolveOsmLocation,
+  retrieveOsmCandidates,
+  retrieveTargetedOsmCandidates,
+} from "./osm";
 import { verifyOsmCandidatesWithReviews } from "./review-verification";
 import {
   resolveBusinessSearchArea,
@@ -42,8 +49,13 @@ export async function discoverActivities(
   const tavilyApiKey = process.env.TAVILY_API_KEY;
   const openAiApiKey = process.env.OPENAI_API_KEY;
   const googlePlacesApiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const providers = {
+    tavily: providerEnabled(request, "tavily"),
+    googlePlaces: providerEnabled(request, "googlePlaces"),
+    osm: providerEnabled(request, "osm"),
+  };
 
-  if (!tavilyApiKey) {
+  if (providers.tavily && !tavilyApiKey) {
     throw new DiscoveryConfigError("Missing TAVILY_API_KEY");
   }
 
@@ -53,19 +65,33 @@ export async function discoverActivities(
 
   const deadline = Date.now() + SOFT_BUDGET_MS;
   const timedOutStages: string[] = [];
+  const stageErrors: string[] = [];
   const failedUrls: string[] = [];
-  const tavily = new TavilyDiscoveryTool(tavilyApiKey);
+  const tavily = tavilyApiKey ? new TavilyDiscoveryTool(tavilyApiKey) : null;
   const openAi = new OpenAIActivityClient(openAiApiKey);
 
-  const osmPromise = withStageFallback(
-    "osm",
-    timedOutStages,
-    retrieveOsmCandidates(request),
-    { location: { query: request.cityOrLocation }, candidates: [] },
-  );
+  const osmPromise = providers.osm
+    ? withStageFallback(
+        "osm",
+        timedOutStages,
+        stageErrors,
+        retrieveOsmCandidates(request),
+        { location: { query: request.cityOrLocation }, candidates: [] },
+      )
+    : withStageFallback(
+        "osm-location",
+        timedOutStages,
+        stageErrors,
+        resolveOsmLocation(request),
+        { query: request.cityOrLocation },
+      ).then((location) => {
+        timedOutStages.push("osm-disabled");
+        return { location, candidates: [] as OSMCandidate[] };
+      });
   const planPromise = withStageFallback(
     "openai-query-plan",
     timedOutStages,
+    stageErrors,
     openAi.generateQueryPlan(request),
     {
       queries: fallbackQueries(request),
@@ -81,22 +107,70 @@ export async function discoverActivities(
     queryPlan.intentProfile,
     request.searchMode,
   );
-  const googlePlacesResult = await retrieveGooglePlacesWithBudget({
-    apiKey: googlePlacesApiKey,
-    request,
-    location: osmResult.location,
-    intent: queryPlan.intentProfile,
-    searchArea: businessSearchArea,
-    deadline,
-    timedOutStages,
-  });
-  const targetedOsm = await retrieveTargetedOsmWithBudget({
-    location: osmResult.location,
-    intent: queryPlan.intentProfile,
-    searchArea: businessSearchArea,
-    deadline,
-    timedOutStages,
-  });
+  const boundedQueries = queryPlan.queries.slice(0, queryCount(request.searchMode));
+  const googlePlacesPromise = providers.googlePlaces
+    ? retrieveGooglePlacesWithBudget({
+        apiKey: googlePlacesApiKey,
+        request,
+        location: osmResult.location,
+        intent: queryPlan.intentProfile,
+        searchArea: businessSearchArea,
+        deadline,
+        timedOutStages,
+      })
+    : Promise.resolve({
+        candidates: [] as OSMCandidate[],
+        debug: googlePlacesFallbackDebug(
+          "skipped",
+          "Google Places disabled by debug provider toggle",
+        ),
+      });
+  const targetedOsmPromise = providers.osm
+    ? retrieveTargetedOsmWithBudget({
+        location: osmResult.location,
+        intent: queryPlan.intentProfile,
+        searchArea: businessSearchArea,
+        deadline,
+        timedOutStages,
+      })
+    : Promise.resolve([] as OSMCandidate[]);
+  const contentPromise =
+    providers.tavily && tavily
+      ? withTimeout(
+          collectDiscoveryContent(request, boundedQueries, tavily),
+          Math.min(remainingMs(deadline), contentBudgetMs(request.searchMode)),
+          "social-content",
+          timedOutStages,
+          {
+            pages: [] as PageContent[],
+            debug: {
+              searchedQueries: boundedQueries,
+              visitedUrls: [],
+              failedUrls: [],
+            },
+          },
+        )
+      : Promise.resolve({
+          pages: [] as PageContent[],
+          debug: {
+            searchedQueries: [] as string[],
+            visitedUrls: [],
+            failedUrls: [],
+          },
+        });
+
+  if (!providers.googlePlaces) {
+    timedOutStages.push("google-places-disabled");
+  }
+  if (!providers.tavily) {
+    timedOutStages.push("tavily-disabled");
+  }
+
+  const [googlePlacesResult, targetedOsm, content] = await Promise.all([
+    googlePlacesPromise,
+    targetedOsmPromise,
+    contentPromise,
+  ]);
   const osmCandidates = mergeOsmCandidates([
     ...osmResult.candidates,
     ...targetedOsm,
@@ -108,26 +182,11 @@ export async function discoverActivities(
   await logOsmCandidatesBeforeFiltering({
     request,
     intent: queryPlan.intentProfile,
+    googlePlacesCandidates: googlePlacesResult.candidates,
     broadCandidates: osmResult.candidates,
     targetedCandidates: targetedOsm,
-    mergedCandidates: physicalCandidates,
+    mergedCandidates: osmCandidates,
   });
-  const remainingAfterPlan = remainingMs(deadline);
-  const boundedQueries = queryPlan.queries.slice(0, queryCount(request.searchMode));
-  const content = await withTimeout(
-    collectDiscoveryContent(request, boundedQueries, tavily),
-    Math.min(remainingAfterPlan, contentBudgetMs(request.searchMode)),
-    "social-content",
-    timedOutStages,
-    {
-      pages: [] as PageContent[],
-      debug: {
-        searchedQueries: boundedQueries,
-        visitedUrls: [],
-        failedUrls: [],
-      },
-    },
-  );
 
   failedUrls.push(...content.debug.failedUrls);
 
@@ -147,15 +206,23 @@ export async function discoverActivities(
     queryPlan.intentProfile,
     reviewTargetCount(request.searchMode),
   );
-  const reviewResult = await verifyReviewsWithBudget({
-    openAi,
-    request,
-    tavily,
-    intent: queryPlan.intentProfile,
-    candidates: reviewTargets,
-    deadline,
-    timedOutStages,
-  });
+  const reviewResult =
+    providers.tavily && tavily
+      ? await verifyReviewsWithBudget({
+          openAi,
+          request,
+          tavily,
+          intent: queryPlan.intentProfile,
+          candidates: reviewTargets,
+          deadline,
+          timedOutStages,
+        })
+      : {
+          candidates: [] as SocialCandidate[],
+          reviewQueries: [] as string[],
+          visitedUrls: [] as string[],
+          failedUrls: [] as string[],
+        };
   failedUrls.push(...reviewResult.failedUrls);
 
   const merged = buildMergedActivities({
@@ -176,6 +243,7 @@ export async function discoverActivities(
     visitedUrls: [...content.debug.visitedUrls, ...reviewResult.visitedUrls],
     failedUrls,
     timedOutStages,
+    stageErrors,
     reviewQueries: reviewResult.reviewQueries,
     intentProfile: queryPlan.intentProfile,
     googlePlacesDebug: googlePlacesResult.debug,
@@ -277,44 +345,99 @@ async function retrieveGooglePlacesWithBudget({
   deadline: number;
   timedOutStages: string[];
 }) {
-  if (!apiKey || remainingMs(deadline) < 2500) {
-    if (apiKey) {
-      timedOutStages.push("google-places");
-    }
+  if (!apiKey) {
     return {
       candidates: [] as OSMCandidate[],
-      debug: {
-        calls: 0,
-        estimatedCredits: 0,
-        rawCandidates: 0,
-        dedupedCandidates: 0,
-        queries: [] as string[],
-        requestFilters: [] as string[],
-        requestBiases: [] as string[],
-        errors: [] as string[],
-      },
+      debug: googlePlacesFallbackDebug(
+        "skipped",
+        "missing GOOGLE_PLACES_API_KEY",
+      ),
     };
   }
 
-  return withTimeout(
+  if (remainingMs(deadline) < 2500) {
+    timedOutStages.push("google-places");
+    return {
+      candidates: [] as OSMCandidate[],
+      debug: googlePlacesFallbackDebug(
+        "skipped",
+        "insufficient time remaining before Google Places stage",
+      ),
+    };
+  }
+
+  return withGooglePlacesTimeout(
     retrieveGooglePlacesCandidates({ apiKey, request, location, intent, searchArea }),
     Math.min(remainingMs(deadline), googlePlacesBudgetMs(request.searchMode)),
-    "google-places",
     timedOutStages,
-    {
-      candidates: [] as OSMCandidate[],
-      debug: {
-        calls: 0,
-        estimatedCredits: 0,
-        rawCandidates: 0,
-        dedupedCandidates: 0,
-        queries: [] as string[],
-        requestFilters: [] as string[],
-        requestBiases: [] as string[],
-        errors: [] as string[],
-      },
-    },
   );
+}
+
+async function withGooglePlacesTimeout(
+  promise: Promise<GooglePlacesRetrievalResult>,
+  timeoutMs: number,
+  timedOutStages: string[],
+): Promise<GooglePlacesRetrievalResult> {
+  if (timeoutMs <= 0) {
+    timedOutStages.push("google-places");
+    return {
+      candidates: [],
+      debug: googlePlacesFallbackDebug(
+        "timed_out",
+        "Google Places stage exceeded its time budget",
+      ),
+    };
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      promise.catch((error) => ({
+        candidates: [],
+        debug: googlePlacesFallbackDebug(
+          "failed",
+          `Google Places stage failed: ${errorMessage(error)}`,
+        ),
+      })),
+      new Promise<GooglePlacesRetrievalResult>((resolve) => {
+        timer = setTimeout(() => {
+          timedOutStages.push("google-places");
+          resolve({
+            candidates: [],
+            debug: googlePlacesFallbackDebug(
+              "timed_out",
+              "Google Places stage exceeded its time budget",
+            ),
+          });
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function googlePlacesFallbackDebug(
+  status: GooglePlacesRetrievalResult["debug"]["status"],
+  reason: string,
+): GooglePlacesRetrievalResult["debug"] {
+  return {
+    status,
+    skipReason: reason,
+    calls: 0,
+    estimatedCredits: 0,
+    rawCandidates: 0,
+    dedupedCandidates: 0,
+    queries: [],
+    identifiedSubjects: [],
+    rejectedCombinedQueries: [],
+    requestFilters: [],
+    requestBiases: [],
+    errors: status === "skipped" ? [] : [reason],
+  };
 }
 
 async function retrieveTargetedOsmWithBudget({
@@ -429,13 +552,15 @@ async function verifyReviewsWithBudget({
 async function withStageFallback<T>(
   stage: string,
   timedOutStages: string[],
+  stageErrors: string[],
   promise: Promise<T>,
   fallback: T,
 ) {
   try {
     return await promise;
-  } catch {
+  } catch (error) {
     timedOutStages.push(stage);
+    stageErrors.push(`${stage}: ${errorMessage(error)}`);
     return fallback;
   }
 }
@@ -479,6 +604,7 @@ function buildDebug({
   visitedUrls,
   failedUrls,
   timedOutStages,
+  stageErrors,
   reviewQueries,
   intentProfile,
   googlePlacesDebug,
@@ -493,14 +619,10 @@ function buildDebug({
   visitedUrls: string[];
   failedUrls: string[];
   timedOutStages: string[];
+  stageErrors: string[];
   reviewQueries: string[];
   intentProfile: DiscoveryDebug["intentProfile"];
-  googlePlacesDebug: {
-    calls: number;
-    estimatedCredits: number;
-    rawCandidates: number;
-    dedupedCandidates: number;
-  };
+  googlePlacesDebug: GooglePlacesRetrievalResult["debug"];
   osmCount: number;
   intentFilteredCount: number;
   reviewVerifiedCount: number;
@@ -518,6 +640,7 @@ function buildDebug({
     visitedUrls: uniqueStrings(visitedUrls),
     failedUrls: uniqueStrings(failedUrls),
     timedOutStages: uniqueStrings(timedOutStages),
+    stageErrors: uniqueStrings(stageErrors),
     intentProfile,
     sourceCounts: {
       googlePlaces: googlePlacesDebug.rawCandidates,
@@ -609,6 +732,17 @@ function uniqueStrings(values: string[]) {
   return [...new Set(values)];
 }
 
+function providerEnabled(
+  request: ActivityDiscoveryRequest,
+  provider: "tavily" | "googlePlaces" | "osm",
+) {
+  return request.debugProviders?.[provider] !== false;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function mergeOsmCandidates(candidates: OSMCandidate[]) {
   const byKey = new Map<string, OSMCandidate>();
 
@@ -687,18 +821,24 @@ function geoCloseCandidates(a: OSMCandidate, b: OSMCandidate) {
 async function logOsmCandidatesBeforeFiltering({
   request,
   intent,
+  googlePlacesCandidates,
   broadCandidates,
   targetedCandidates,
   mergedCandidates,
 }: {
   request: ActivityDiscoveryRequest;
   intent: IntentProfile;
+  googlePlacesCandidates: OSMCandidate[];
   broadCandidates: OSMCandidate[];
   targetedCandidates: OSMCandidate[];
   mergedCandidates: OSMCandidate[];
 }) {
   const debugDir = path.join(process.cwd(), ".debug", "activity-discovery");
-  const csvPath = path.join(debugDir, "osm-candidates-before-filter.csv");
+  const osmCsvPath = path.join(debugDir, "osm-candidates-before-filter.csv");
+  const googlePlacesCsvPath = path.join(
+    debugDir,
+    "google-places-candidates-before-filter.csv",
+  );
   const csv = buildOsmDebugCsv({
     request,
     intent,
@@ -709,10 +849,13 @@ async function logOsmCandidatesBeforeFiltering({
 
   try {
     await mkdir(debugDir, { recursive: true });
-    await writeFile(csvPath, csv, "utf8");
+    await Promise.all([
+      writeFile(osmCsvPath, csv, "utf8"),
+      writeFile(googlePlacesCsvPath, buildCandidateCsv(googlePlacesCandidates), "utf8"),
+    ]);
   } catch (error) {
     console.warn(
-      "[activities/discover] Failed to write OSM debug CSV",
+      "[activities/discover] Failed to write provider debug CSVs",
       error instanceof Error ? error.message : error,
     );
   }
@@ -725,11 +868,13 @@ async function logOsmCandidatesBeforeFiltering({
         preferencePrompt: request.preferencePrompt,
         intentTerms: intentTerms(intent),
         counts: {
+          googlePlaces: googlePlacesCandidates.length,
           broad: broadCandidates.length,
           targeted: targetedCandidates.length,
-          merged: mergedCandidates.length,
+          osmMerged: mergedCandidates.length,
         },
-        csvPath,
+        osmCsvPath,
+        googlePlacesCsvPath,
       },
       null,
       2,
@@ -829,16 +974,7 @@ async function writeDiscoveryDebugFiles({
   businessSearchArea: BusinessSearchArea;
   queryPlan: string[];
   intent: IntentProfile;
-  googlePlacesDebug: {
-    calls: number;
-    estimatedCredits: number;
-    rawCandidates: number;
-    dedupedCandidates: number;
-    queries: string[];
-    requestFilters: string[];
-    requestBiases: string[];
-    errors: string[];
-  };
+  googlePlacesDebug: GooglePlacesRetrievalResult["debug"];
   googlePlacesCandidates: OSMCandidate[];
   osmBroadCandidates: OSMCandidate[];
   osmTargetedCandidates: OSMCandidate[];
@@ -956,16 +1092,7 @@ function buildDiscoveryRunLog(summary: {
   businessSearchArea: BusinessSearchArea;
   queryPlan: string[];
   intent: IntentProfile;
-  googlePlaces: {
-    calls: number;
-    estimatedCredits: number;
-    rawCandidates: number;
-    dedupedCandidates: number;
-    queries: string[];
-    requestFilters: string[];
-    requestBiases: string[];
-    errors: string[];
-  };
+  googlePlaces: GooglePlacesRetrievalResult["debug"];
   counts: Record<string, number>;
   reviewQueries: string[];
   visitedReviewUrls: string[];
@@ -991,6 +1118,7 @@ function buildDiscoveryRunLog(summary: {
       `cityOrLocation: ${summary.request.cityOrLocation}`,
       `groupSize: ${summary.request.groupSize}`,
       `searchMode: ${summary.request.searchMode}`,
+      `debugProviders: ${JSON.stringify(summary.request.debugProviders ?? {})}`,
       `dateRange: ${JSON.stringify(summary.request.dateRange ?? null)}`,
       `preferencePrompt: ${summary.request.preferencePrompt}`,
     ]),
@@ -1022,13 +1150,24 @@ function buildDiscoveryRunLog(summary: {
       `attributes: ${summary.intent.attributes.join(", ") || "none"}`,
       `exclusions: ${summary.intent.exclusions.join(", ") || "none"}`,
       `reviewSearchTerms: ${summary.intent.reviewSearchTerms.join(", ") || "none"}`,
+      `googlePlaceSubjects: ${summary.intent.googlePlaceSubjects.join(", ") || "none"}`,
+      `googlePlaceQueries: ${summary.intent.googlePlaceQueries.join(", ") || "none"}`,
     ]),
     logSection("QUERY PLAN", summary.queryPlan.map((query, index) => `${index + 1}. ${query}`)),
     logSection("GOOGLE PLACES", [
+      `status: ${summary.googlePlaces.status}`,
+      `skipReason: ${summary.googlePlaces.skipReason || "none"}`,
       `calls: ${summary.googlePlaces.calls}`,
       `estimatedCredits: ${summary.googlePlaces.estimatedCredits}`,
       `rawCandidates: ${summary.googlePlaces.rawCandidates}`,
       `dedupedCandidates: ${summary.googlePlaces.dedupedCandidates}`,
+      `identifiedSubjects: ${summary.googlePlaces.identifiedSubjects.join(", ") || "none"}`,
+      "rejectedCombinedQueries:",
+      ...(summary.googlePlaces.rejectedCombinedQueries.length > 0
+        ? summary.googlePlaces.rejectedCombinedQueries.map(
+            (query, index) => `  ${index + 1}. ${query}`,
+          )
+        : ["  none"]),
       "queries:",
       ...summary.googlePlaces.queries.map((query, index) => `  ${index + 1}. ${query}`),
       "filters:",
@@ -1083,6 +1222,9 @@ function buildDiscoveryRunLog(summary: {
     ]),
     logSection("TIMED OUT / FAILED STAGES", summary.debug.timedOutStages.length > 0
       ? summary.debug.timedOutStages
+      : ["none"]),
+    logSection("STAGE ERROR DETAILS", summary.debug.stageErrors?.length
+      ? summary.debug.stageErrors
       : ["none"]),
     logSection("SOURCE COUNTS", Object.entries(summary.debug.sourceCounts).map(
       ([key, value]) => `${key}: ${value}`,

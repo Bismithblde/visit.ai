@@ -68,6 +68,11 @@ describe("trip planner page integration", () => {
           groupSize: 4,
           preferencePrompt: "quiet breakfasts and design stops",
           searchMode: "balanced",
+          debugProviders: {
+            tavily: true,
+            googlePlaces: true,
+            osm: true,
+          },
         }),
       }),
     );
@@ -87,6 +92,19 @@ describe("trip planner page integration", () => {
         jsonResponse({
           activities: [
             {
+              activityName: "Quiet Breakfast Market",
+              evidenceSummary: "A calm morning market stop.",
+              reason: "Matches your food preference",
+              tags: ["breakfast"],
+              sourceUrls: ["https://example.com/market"],
+              confidenceScore: 0.61,
+              preferenceMatchScore: 0.61,
+              rating: 4.2,
+              reviewCount: 31,
+              fitsPreference: true,
+              location: { label: "Alfama" },
+            },
+            {
               activityName: "Hidden Design Walk",
               evidenceSummary: "A source-backed small group activity in Lisbon.",
               reason: "Matches your walking preference",
@@ -98,19 +116,10 @@ describe("trip planner page integration", () => {
               ],
               confidenceScore: 0.82,
               preferenceMatchScore: 0.82,
+              rating: 4.8,
+              reviewCount: 124,
               fitsPreference: true,
               location: { label: "Baixa" },
-            },
-            {
-              activityName: "Quiet Breakfast Market",
-              evidenceSummary: "A calm morning market stop.",
-              reason: "Matches your food preference",
-              tags: ["breakfast"],
-              sourceUrls: ["https://example.com/market"],
-              confidenceScore: 0.61,
-              preferenceMatchScore: 0.61,
-              fitsPreference: true,
-              location: { label: "Alfama" },
             },
           ],
         }),
@@ -129,7 +138,26 @@ describe("trip planner page integration", () => {
     expect(screen.getAllByText("Price TBD")).toHaveLength(2);
     expect(screen.getByText("Time TBD - Baixa")).toBeDefined();
     expect(screen.getByText("82% match")).toBeDefined();
+    expect(screen.getByText("4.8 stars (124)")).toBeDefined();
     expect(screen.getByText("+1")).toBeDefined();
+    expect(
+      screen
+        .getAllByRole("checkbox")
+        .map((checkbox) => checkbox.getAttribute("aria-label")),
+    ).toEqual(
+      expect.arrayContaining(["Hidden Design Walk", "Quiet Breakfast Market"]),
+    );
+    expect(
+      screen
+        .getAllByRole("checkbox")
+        .map((checkbox) => checkbox.getAttribute("aria-label"))
+        .indexOf("Hidden Design Walk"),
+    ).toBeLessThan(
+      screen
+        .getAllByRole("checkbox")
+        .map((checkbox) => checkbox.getAttribute("aria-label"))
+        .indexOf("Quiet Breakfast Market"),
+    );
 
     fireEvent.click(discoveredActivity);
     fireEvent.click(screen.getByRole("button", { name: "Make trip" }));

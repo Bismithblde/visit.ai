@@ -53,6 +53,13 @@ export async function retrieveOsmCandidates(
   return { location, candidates };
 }
 
+export async function resolveOsmLocation(
+  request: ActivityDiscoveryRequest,
+  signal?: AbortSignal,
+) {
+  return geocodeLocation(request.cityOrLocation, signal);
+}
+
 export async function retrieveTargetedOsmCandidates(
   location: DiscoveryLocation,
   searchTerms: string[],

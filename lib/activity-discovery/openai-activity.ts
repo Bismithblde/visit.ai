@@ -8,7 +8,7 @@ import type {
 } from "./types";
 import { fallbackIntentProfile } from "./intent";
 
-const DEFAULT_OPENAI_MODEL = "gpt-5.5-mini";
+const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
 
 interface OpenAIResponse {
   output_text?: string;
@@ -50,6 +50,10 @@ export class OpenAIActivityClient {
         "Return 5-10 queries: 2 general city activity queries, 3-5 preference-specific Reddit queries, and 1-2 web/blog fallback queries.",
         "Also return broad OSM categories/tags that may be relevant. Be lenient.",
         "Return a generic intentProfile from the user prompt. Do not special-case domains; extract weighted concepts, desired place/activity types, attributes, exclusions, and review search terms that could apply to any prompt.",
+        "For Google Places, act as a provider orchestrator: identify concrete searchable subjects first in googlePlaceSubjects, then produce one googlePlaceQueries entry per subject.",
+        "Do not combine separate subjects into one Places query. For example, food + boba should produce separate subjects and separate queries. Prefer common Google Places category phrasing: boba should usually become bubble tea.",
+        "Examples: 'boba + food' => googlePlaceSubjects ['bubble tea','food'] and googlePlaceQueries ['bubble tea','food']; 'parks and museums' => ['parks','museums']; 'bubble tea' => ['bubble tea']; 'dim sum + bakery' => ['dim sum','bakery'].",
+        "Google Places queries should be short business/place search phrases, not full sentences and not Reddit/blog/web queries.",
         "Classify the practical provider search area for local activity/business discovery. Choose searchAreaKind from neighborhood, city, metro, region, or unknown, and recommend a radius in meters from the geocoded center. For neighborhoods such as Flushing Queens, prefer roughly 5000m unless the prompt clearly needs a wider city/metro search.",
       ].join("\n"),
       JSON.stringify({ request }),
@@ -187,7 +191,9 @@ export class OpenAIActivityClient {
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI failed with ${response.status} ${response.statusText}`);
+      throw new Error(
+        `OpenAI failed with ${response.status} ${response.statusText}: ${await compactResponseText(response)}`,
+      );
     }
 
     const text = getOutputText((await response.json()) as OpenAIResponse);
@@ -282,6 +288,14 @@ function sanitizeIntentProfile(
     exclusions: cleanList(profile?.exclusions ?? fallback.exclusions, 12),
     reviewSearchTerms: cleanList(
       profile?.reviewSearchTerms ?? fallback.reviewSearchTerms,
+      12,
+    ),
+    googlePlaceSubjects: cleanList(
+      profile?.googlePlaceSubjects ?? fallback.googlePlaceSubjects,
+      12,
+    ),
+    googlePlaceQueries: cleanList(
+      profile?.googlePlaceQueries ?? fallback.googlePlaceQueries,
       12,
     ),
     minimumPreferenceScore: clamp(
@@ -413,6 +427,14 @@ function cleanText(value: string) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
+async function compactResponseText(response: Response) {
+  try {
+    return (await response.text()).replace(/\s+/g, " ").trim().slice(0, 1000) || "empty response body";
+  } catch {
+    return "unreadable response body";
+  }
+}
+
 function uniqueStrings(values: string[]) {
   return [...new Set(values)];
 }
@@ -441,8 +463,6 @@ const queryPlanSchema = {
   properties: {
     queries: {
       type: "array",
-      minItems: 2,
-      maxItems: 10,
       items: { type: "string" },
     },
     relevantOsmCategories: {
@@ -464,6 +484,8 @@ const queryPlanSchema = {
         "attributes",
         "exclusions",
         "reviewSearchTerms",
+        "googlePlaceSubjects",
+        "googlePlaceQueries",
         "minimumPreferenceScore",
         "searchAreaKind",
         "recommendedRadiusMeters",
@@ -489,6 +511,8 @@ const queryPlanSchema = {
         attributes: { type: "array", items: { type: "string" } },
         exclusions: { type: "array", items: { type: "string" } },
         reviewSearchTerms: { type: "array", items: { type: "string" } },
+        googlePlaceSubjects: { type: "array", items: { type: "string" } },
+        googlePlaceQueries: { type: "array", items: { type: "string" } },
         minimumPreferenceScore: { type: "number" },
         searchAreaKind: {
           type: "string",
