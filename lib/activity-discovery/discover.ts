@@ -7,7 +7,7 @@ import {
   intentTerms,
   selectOsmCandidatesForReview,
 } from "./intent";
-import { retrieveGeoapifyCandidates } from "./geoapify";
+import { retrieveGooglePlacesCandidates } from "./google-places";
 import {
   fallbackQueries,
   fallbackVerify,
@@ -41,7 +41,7 @@ export async function discoverActivities(
 ): Promise<DiscoveryResponse> {
   const tavilyApiKey = process.env.TAVILY_API_KEY;
   const openAiApiKey = process.env.OPENAI_API_KEY;
-  const geoapifyApiKey = process.env.GEOAPIFY_API_KEY;
+  const googlePlacesApiKey = process.env.GOOGLE_PLACES_API_KEY;
 
   if (!tavilyApiKey) {
     throw new DiscoveryConfigError("Missing TAVILY_API_KEY");
@@ -81,8 +81,8 @@ export async function discoverActivities(
     queryPlan.intentProfile,
     request.searchMode,
   );
-  const geoapifyResult = await retrieveGeoapifyWithBudget({
-    apiKey: geoapifyApiKey,
+  const googlePlacesResult = await retrieveGooglePlacesWithBudget({
+    apiKey: googlePlacesApiKey,
     request,
     location: osmResult.location,
     intent: queryPlan.intentProfile,
@@ -102,7 +102,7 @@ export async function discoverActivities(
     ...targetedOsm,
   ]);
   const physicalCandidates = mergePhysicalCandidates([
-    ...geoapifyResult.candidates,
+    ...googlePlacesResult.candidates,
     ...osmCandidates,
   ]);
   await logOsmCandidatesBeforeFiltering({
@@ -178,7 +178,7 @@ export async function discoverActivities(
     timedOutStages,
     reviewQueries: reviewResult.reviewQueries,
     intentProfile: queryPlan.intentProfile,
-    geoapifyDebug: geoapifyResult.debug,
+    googlePlacesDebug: googlePlacesResult.debug,
     osmCount: osmCandidates.length,
     intentFilteredCount: filteredOsm.length,
     reviewVerifiedCount: reviewResult.candidates.length,
@@ -192,8 +192,8 @@ export async function discoverActivities(
     businessSearchArea,
     queryPlan: boundedQueries,
     intent: queryPlan.intentProfile,
-    geoapifyDebug: geoapifyResult.debug,
-    geoapifyCandidates: geoapifyResult.candidates,
+    googlePlacesDebug: googlePlacesResult.debug,
+    googlePlacesCandidates: googlePlacesResult.candidates,
     osmBroadCandidates: osmResult.candidates,
     osmTargetedCandidates: targetedOsm,
     physicalCandidates,
@@ -260,7 +260,7 @@ async function extractSocialWithBudget({
   return results;
 }
 
-async function retrieveGeoapifyWithBudget({
+async function retrieveGooglePlacesWithBudget({
   apiKey,
   request,
   location,
@@ -279,7 +279,7 @@ async function retrieveGeoapifyWithBudget({
 }) {
   if (!apiKey || remainingMs(deadline) < 2500) {
     if (apiKey) {
-      timedOutStages.push("geoapify");
+      timedOutStages.push("google-places");
     }
     return {
       candidates: [] as OSMCandidate[],
@@ -291,14 +291,15 @@ async function retrieveGeoapifyWithBudget({
         queries: [] as string[],
         requestFilters: [] as string[],
         requestBiases: [] as string[],
+        errors: [] as string[],
       },
     };
   }
 
   return withTimeout(
-    retrieveGeoapifyCandidates({ apiKey, request, location, intent, searchArea }),
-    Math.min(remainingMs(deadline), geoapifyBudgetMs(request.searchMode)),
-    "geoapify",
+    retrieveGooglePlacesCandidates({ apiKey, request, location, intent, searchArea }),
+    Math.min(remainingMs(deadline), googlePlacesBudgetMs(request.searchMode)),
+    "google-places",
     timedOutStages,
     {
       candidates: [] as OSMCandidate[],
@@ -310,6 +311,7 @@ async function retrieveGeoapifyWithBudget({
         queries: [] as string[],
         requestFilters: [] as string[],
         requestBiases: [] as string[],
+        errors: [] as string[],
       },
     },
   );
@@ -479,7 +481,7 @@ function buildDebug({
   timedOutStages,
   reviewQueries,
   intentProfile,
-  geoapifyDebug,
+  googlePlacesDebug,
   osmCount,
   intentFilteredCount,
   reviewVerifiedCount,
@@ -493,7 +495,7 @@ function buildDebug({
   timedOutStages: string[];
   reviewQueries: string[];
   intentProfile: DiscoveryDebug["intentProfile"];
-  geoapifyDebug: {
+  googlePlacesDebug: {
     calls: number;
     estimatedCredits: number;
     rawCandidates: number;
@@ -518,12 +520,12 @@ function buildDebug({
     timedOutStages: uniqueStrings(timedOutStages),
     intentProfile,
     sourceCounts: {
-      geoapify: geoapifyDebug.rawCandidates,
-      geoapifyCalls: geoapifyDebug.calls,
-      geoapifyEstimatedCredits: geoapifyDebug.estimatedCredits,
-      geoapifyDeduped: geoapifyDebug.dedupedCandidates,
-      geoapifyEvidenceVerified: socialCandidates.filter((candidate) =>
-        candidate.evidenceSummary.toLowerCase().includes("geoapify"),
+      googlePlaces: googlePlacesDebug.rawCandidates,
+      googlePlacesCalls: googlePlacesDebug.calls,
+      googlePlacesEstimatedCredits: googlePlacesDebug.estimatedCredits,
+      googlePlacesDeduped: googlePlacesDebug.dedupedCandidates,
+      googlePlacesEvidenceVerified: socialCandidates.filter((candidate) =>
+        candidate.evidenceSummary.toLowerCase().includes("google places"),
       ).length,
       osm: osmCount,
       intentFiltered: intentFilteredCount,
@@ -588,7 +590,7 @@ function reviewBudgetMs(searchMode: ActivityDiscoveryRequest["searchMode"]) {
   }
 }
 
-function geoapifyBudgetMs(searchMode: ActivityDiscoveryRequest["searchMode"]) {
+function googlePlacesBudgetMs(searchMode: ActivityDiscoveryRequest["searchMode"]) {
   switch (searchMode) {
     case "fast":
       return 3500;
@@ -635,7 +637,7 @@ function mergePhysicalCandidates(candidates: OSMCandidate[]) {
     }
 
     const existing = byKey.get(existingKey);
-    if (!existing || provider === "geoapify") {
+    if (!existing || provider === "google_places") {
       byKey.set(existingKey, candidate);
     }
   }
@@ -808,8 +810,8 @@ async function writeDiscoveryDebugFiles({
   businessSearchArea,
   queryPlan,
   intent,
-  geoapifyDebug,
-  geoapifyCandidates,
+  googlePlacesDebug,
+  googlePlacesCandidates,
   osmBroadCandidates,
   osmTargetedCandidates,
   physicalCandidates,
@@ -827,7 +829,7 @@ async function writeDiscoveryDebugFiles({
   businessSearchArea: BusinessSearchArea;
   queryPlan: string[];
   intent: IntentProfile;
-  geoapifyDebug: {
+  googlePlacesDebug: {
     calls: number;
     estimatedCredits: number;
     rawCandidates: number;
@@ -835,8 +837,9 @@ async function writeDiscoveryDebugFiles({
     queries: string[];
     requestFilters: string[];
     requestBiases: string[];
+    errors: string[];
   };
-  geoapifyCandidates: OSMCandidate[];
+  googlePlacesCandidates: OSMCandidate[];
   osmBroadCandidates: OSMCandidate[];
   osmTargetedCandidates: OSMCandidate[];
   physicalCandidates: OSMCandidate[];
@@ -861,7 +864,7 @@ async function writeDiscoveryDebugFiles({
   const files = {
     latestLog: latestLogPath,
     appendLog: appendLogPath,
-    geoapify: path.join(debugDir, "01-geoapify-candidates.csv"),
+    googlePlaces: path.join(debugDir, "01-google-places-candidates.csv"),
     osmBroad: path.join(debugDir, "02-osm-broad-candidates.csv"),
     osmTargeted: path.join(debugDir, "03-osm-targeted-candidates.csv"),
     physicalBeforeFilter: path.join(debugDir, "04-physical-before-filter.csv"),
@@ -881,9 +884,9 @@ async function writeDiscoveryDebugFiles({
     businessSearchArea,
     queryPlan,
     intent,
-    geoapify: geoapifyDebug,
+    googlePlaces: googlePlacesDebug,
     counts: {
-      geoapifyCandidates: geoapifyCandidates.length,
+      googlePlacesCandidates: googlePlacesCandidates.length,
       osmBroadCandidates: osmBroadCandidates.length,
       osmTargetedCandidates: osmTargetedCandidates.length,
       physicalBeforeFilter: physicalCandidates.length,
@@ -900,7 +903,7 @@ async function writeDiscoveryDebugFiles({
     failedReviewUrls: reviewResult.failedUrls,
     debug,
     stages: {
-      geoapifyCandidates: geoapifyCandidates.map(logCandidate),
+      googlePlacesCandidates: googlePlacesCandidates.map(logCandidate),
       osmBroadCandidates: osmBroadCandidates.map(logCandidate),
       osmTargetedCandidates: osmTargetedCandidates.map(logCandidate),
       physicalBeforeFilter: physicalCandidates.map(logCandidate),
@@ -922,7 +925,7 @@ async function writeDiscoveryDebugFiles({
       writeFile(summaryPath, JSON.stringify(summary, null, 2), "utf8"),
       writeFile(latestLogPath, logText, "utf8"),
       appendFile(appendLogPath, `${logText}\n${"=".repeat(100)}\n`, "utf8"),
-      writeFile(files.geoapify, buildCandidateCsv(geoapifyCandidates), "utf8"),
+      writeFile(files.googlePlaces, buildCandidateCsv(googlePlacesCandidates), "utf8"),
       writeFile(files.osmBroad, buildCandidateCsv(osmBroadCandidates), "utf8"),
       writeFile(files.osmTargeted, buildCandidateCsv(osmTargetedCandidates), "utf8"),
       writeFile(files.physicalBeforeFilter, buildCandidateCsv(physicalCandidates), "utf8"),
@@ -953,7 +956,7 @@ function buildDiscoveryRunLog(summary: {
   businessSearchArea: BusinessSearchArea;
   queryPlan: string[];
   intent: IntentProfile;
-  geoapify: {
+  googlePlaces: {
     calls: number;
     estimatedCredits: number;
     rawCandidates: number;
@@ -961,6 +964,7 @@ function buildDiscoveryRunLog(summary: {
     queries: string[];
     requestFilters: string[];
     requestBiases: string[];
+    errors: string[];
   };
   counts: Record<string, number>;
   reviewQueries: string[];
@@ -968,7 +972,7 @@ function buildDiscoveryRunLog(summary: {
   failedReviewUrls: string[];
   debug: DiscoveryDebug;
   stages: {
-    geoapifyCandidates: string[];
+    googlePlacesCandidates: string[];
     osmBroadCandidates: string[];
     osmTargetedCandidates: string[];
     physicalBeforeFilter: string[];
@@ -1020,24 +1024,28 @@ function buildDiscoveryRunLog(summary: {
       `reviewSearchTerms: ${summary.intent.reviewSearchTerms.join(", ") || "none"}`,
     ]),
     logSection("QUERY PLAN", summary.queryPlan.map((query, index) => `${index + 1}. ${query}`)),
-    logSection("GEOAPIFY", [
-      `calls: ${summary.geoapify.calls}`,
-      `estimatedCredits: ${summary.geoapify.estimatedCredits}`,
-      `rawCandidates: ${summary.geoapify.rawCandidates}`,
-      `dedupedCandidates: ${summary.geoapify.dedupedCandidates}`,
+    logSection("GOOGLE PLACES", [
+      `calls: ${summary.googlePlaces.calls}`,
+      `estimatedCredits: ${summary.googlePlaces.estimatedCredits}`,
+      `rawCandidates: ${summary.googlePlaces.rawCandidates}`,
+      `dedupedCandidates: ${summary.googlePlaces.dedupedCandidates}`,
       "queries:",
-      ...summary.geoapify.queries.map((query, index) => `  ${index + 1}. ${query}`),
+      ...summary.googlePlaces.queries.map((query, index) => `  ${index + 1}. ${query}`),
       "filters:",
-      ...summary.geoapify.requestFilters.map(
+      ...summary.googlePlaces.requestFilters.map(
         (filter, index) => `  ${index + 1}. ${filter}`,
       ),
       "biases:",
-      ...summary.geoapify.requestBiases.map(
+      ...summary.googlePlaces.requestBiases.map(
         (bias, index) => `  ${index + 1}. ${bias}`,
       ),
+      "errors:",
+      ...(summary.googlePlaces.errors.length > 0
+        ? summary.googlePlaces.errors.map((error, index) => `  ${index + 1}. ${error}`)
+        : ["  none"]),
     ]),
     logSection("PIPELINE COUNTS", [
-      `geoapifyCandidates: ${summary.counts.geoapifyCandidates}`,
+      `googlePlacesCandidates: ${summary.counts.googlePlacesCandidates}`,
       `osmBroadCandidates: ${summary.counts.osmBroadCandidates}`,
       `osmTargetedCandidates: ${summary.counts.osmTargetedCandidates}`,
       `physicalBeforeFilter: ${summary.counts.physicalBeforeFilter}`,
@@ -1049,7 +1057,7 @@ function buildDiscoveryRunLog(summary: {
       `verified: ${summary.counts.verified}`,
       `final: ${summary.counts.final}`,
     ]),
-    logListSection("01 GEOAPIFY CANDIDATES", summary.stages.geoapifyCandidates),
+    logListSection("01 GOOGLE PLACES CANDIDATES", summary.stages.googlePlacesCandidates),
     logListSection("02 OSM BROAD CANDIDATES", summary.stages.osmBroadCandidates),
     logListSection("03 OSM TARGETED CANDIDATES", summary.stages.osmTargetedCandidates),
     logListSection("04 PHYSICAL BEFORE FILTER", summary.stages.physicalBeforeFilter),
@@ -1105,6 +1113,9 @@ function logCandidate(candidate: OSMCandidate) {
     candidate.providerCategories?.length
       ? `providerCategories=${candidate.providerCategories.join(" | ")}`
       : "",
+    candidate.rating !== undefined ? `rating=${candidate.rating}` : "",
+    candidate.reviewCount !== undefined ? `reviewCount=${candidate.reviewCount}` : "",
+    candidate.reviewSummary ? `reviewSummary=${candidate.reviewSummary}` : "",
     `tags=${candidate.tags.join(" | ")}`,
     `activities=${candidate.possibleActivities.join(" | ")}`,
     `rawTags=${Object.entries(compactRawTags(candidate.rawTags))
@@ -1177,6 +1188,10 @@ function buildCandidateCsv(candidates: OSMCandidate[]) {
     "formattedAddress",
     "distanceMeters",
     "estimatedCredits",
+    "rating",
+    "reviewCount",
+    "reviewSummary",
+    "sourceUrls",
     "tags",
     "possibleActivities",
     "rawTags",
@@ -1193,6 +1208,10 @@ function buildCandidateCsv(candidates: OSMCandidate[]) {
     candidate.formattedAddress ?? "",
     candidate.distanceMeters ?? "",
     candidate.estimatedCredits ?? "",
+    candidate.rating ?? "",
+    candidate.reviewCount ?? "",
+    candidate.reviewSummary ?? "",
+    (candidate.sourceUrls ?? []).join(" | "),
     candidate.tags.join(" | "),
     candidate.possibleActivities.join(" | "),
     Object.entries(compactRawTags(candidate.rawTags))

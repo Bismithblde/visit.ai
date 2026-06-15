@@ -579,12 +579,12 @@ const activitySchema = {
     source: {
       type: "string",
       enum: [
-        "geoapify",
+        "google_places",
         "osm",
         "reddit",
         "web",
-        "geoapify+reddit",
-        "geoapify+web",
+        "google_places+reddit",
+        "google_places+web",
         "osm+reddit",
         "osm+web",
         "mixed",

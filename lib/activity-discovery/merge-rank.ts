@@ -84,8 +84,8 @@ function osmToActivity(
       latitude: candidate.latitude,
       longitude: candidate.longitude,
     },
-    source: provider === "geoapify" ? "geoapify" : "osm",
-    sourceUrls: [],
+    source: provider === "google_places" ? "google_places" : "osm",
+    sourceUrls: candidate.sourceUrls ?? [],
     osm:
       provider === "osm"
         ? {
@@ -104,18 +104,22 @@ function osmToActivity(
       estimatedCredits: candidate.estimatedCredits,
     },
     tags,
-    confidenceScore: provider === "geoapify" ? 0.74 : 0.58,
+    confidenceScore: provider === "google_places" ? 0.8 : 0.58,
     preferenceMatchScore,
+    rating: candidate.rating,
+    reviewCount: candidate.reviewCount,
+    verificationSources: candidate.sourceUrls,
+    reviewSummary: candidate.reviewSummary,
     evidenceSummary:
-      provider === "geoapify"
-        ? `${candidate.placeName} is listed by Geoapify as ${candidate.providerCategories?.join(", ") || candidate.category}.`
+      provider === "google_places"
+        ? `${candidate.placeName} is listed by Google Places as ${candidate.providerCategories?.join(", ") || candidate.category}.${candidate.reviewSummary ? ` ${candidate.reviewSummary}` : ""}`
         : `${candidate.placeName} is listed in OpenStreetMap as ${candidate.category}.`,
-    reason: `${provider === "geoapify" ? "Geoapify" : "OSM"} identifies ${candidate.placeName} as a physical place suitable for ${candidate.possibleActivities
+    reason: `${provider === "google_places" ? "Google Places" : "OSM"} identifies ${candidate.placeName} as a physical place suitable for ${candidate.possibleActivities
       .slice(0, 3)
       .join(", ")}.`,
     fitsPreference:
-      preferenceMatchScore >= (provider === "geoapify" ? 0.25 : 0.35) ||
-      (provider === "geoapify" && hasDirectProviderMatch(candidate)),
+      preferenceMatchScore >= (provider === "google_places" ? 0.25 : 0.35) ||
+      (provider === "google_places" && hasDirectProviderMatch(candidate)),
     missingInfo: ["Current hours, pricing, and crowd levels are not verified."],
     possibleConcerns: candidate.tags.includes("weather dependent")
       ? ["Weather dependent."]
@@ -247,7 +251,7 @@ function finalScore(activity: ActivityDiscoveryItem) {
   const sourceScore =
     activity.source === "mixed" || activity.source.includes("+")
       ? 1
-      : activity.source === "geoapify"
+      : activity.source === "google_places"
         ? 0.82
       : activity.source === "reddit"
         ? 0.86
@@ -375,16 +379,16 @@ function mergedSource(sources: Set<DiscoverySource>): DiscoverySource {
     return "osm+web";
   }
 
-  if (sources.has("geoapify") && sources.has("osm")) {
+  if (sources.has("google_places") && sources.has("osm")) {
     return "mixed";
   }
 
-  if (sources.has("geoapify") && sources.has("reddit")) {
-    return "geoapify+reddit";
+  if (sources.has("google_places") && sources.has("reddit")) {
+    return "google_places+reddit";
   }
 
-  if (sources.has("geoapify") && sources.has("web")) {
-    return "geoapify+web";
+  if (sources.has("google_places") && sources.has("web")) {
+    return "google_places+web";
   }
 
   if (sources.has("osm+reddit") || sources.has("osm+web") || sources.has("mixed")) {

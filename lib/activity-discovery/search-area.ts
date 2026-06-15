@@ -86,35 +86,6 @@ export function resolveBusinessSearchArea(
   };
 }
 
-export function geoapifyFilterForSearchArea(area: BusinessSearchArea) {
-  if (
-    area.mode === "circle" &&
-    typeof area.centerLatitude === "number" &&
-    typeof area.centerLongitude === "number" &&
-    typeof area.radiusMeters === "number"
-  ) {
-    return `circle:${area.centerLongitude},${area.centerLatitude},${area.radiusMeters}`;
-  }
-
-  if (area.boundingBox) {
-    const [south, north, west, east] = area.boundingBox;
-    return `rect:${west},${south},${east},${north}`;
-  }
-
-  return "";
-}
-
-export function geoapifyBiasForSearchArea(area: BusinessSearchArea) {
-  if (
-    typeof area.centerLatitude === "number" &&
-    typeof area.centerLongitude === "number"
-  ) {
-    return `proximity:${area.centerLongitude},${area.centerLatitude}`;
-  }
-
-  return "";
-}
-
 export function overpassSelectorForSearchArea(
   area: BusinessSearchArea,
   fallbackLocation: DiscoveryLocation,

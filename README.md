@@ -2,6 +2,14 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+Create a local `.env` with the server-side API keys used by discovery:
+
+```bash
+OPENAI_API_KEY=...
+TAVILY_API_KEY=...
+GOOGLE_PLACES_API_KEY=...
+```
+
 First, run the development server:
 
 ```bash

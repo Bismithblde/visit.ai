@@ -92,11 +92,11 @@ interface DiscoveryDebug {
   failedUrls: string[];
   timedOutStages: string[];
   sourceCounts: {
-    geoapify?: number;
-    geoapifyCalls?: number;
-    geoapifyEstimatedCredits?: number;
-    geoapifyDeduped?: number;
-    geoapifyEvidenceVerified?: number;
+    googlePlaces?: number;
+    googlePlacesCalls?: number;
+    googlePlacesEstimatedCredits?: number;
+    googlePlacesDeduped?: number;
+    googlePlacesEvidenceVerified?: number;
     osm: number;
     intentFiltered?: number;
     reviewVerified?: number;
@@ -630,6 +630,12 @@ export default function Page() {
                   />
                 )}
               </SelectorGroup>
+              {activityOptions.length > 0 && (
+                <DiscoveryDiagnostics
+                  debug={discoveryDebug}
+                  queryPlan={discoveryQueryPlan}
+                />
+              )}
             </div>
 
             {tripMade && (
@@ -754,36 +760,73 @@ function DiscoveryEmptyState({
     );
   }
 
-  const counts = debug.sourceCounts;
-
   return (
     <div className="grid gap-4 px-3 py-4 text-sm text-[#4f5b55]">
       <p className="font-semibold text-[#202923]">
         No final activities returned. Discovery diagnostics:
       </p>
-      <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-5">
-        <DebugMetric label="Geoapify" value={counts.geoapify ?? 0} />
+      <DiscoveryDebugContent debug={debug} queryPlan={queryPlan} />
+    </div>
+  );
+}
+
+function DiscoveryDiagnostics({
+  debug,
+  queryPlan,
+}: {
+  debug: DiscoveryDebug | null;
+  queryPlan: string[];
+}) {
+  if (!debug) {
+    return null;
+  }
+
+  return (
+    <details className="group rounded-[1.2rem] border border-[#e2e8df] bg-white shadow-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-lg font-semibold text-[#202923] marker:hidden">
+        <span>Discovery diagnostics</span>
+        <span className="text-sm font-semibold text-[#718077] transition group-open:rotate-180">
+          v
+        </span>
+      </summary>
+      <div className="grid gap-4 border-t border-[#eef2ed] px-5 py-4 text-sm text-[#4f5b55]">
+        <DiscoveryDebugContent debug={debug} queryPlan={queryPlan} />
+      </div>
+    </details>
+  );
+}
+
+function DiscoveryDebugContent({
+  debug,
+  queryPlan,
+}: {
+  debug: DiscoveryDebug;
+  queryPlan: string[];
+}) {
+  const counts = debug.sourceCounts;
+
+  return (
+    <>
+      <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-6">
+        <DebugMetric label="Google Places" value={counts.googlePlaces ?? 0} />
         <DebugMetric label="OSM" value={counts.osm} />
         <DebugMetric label="Reddit" value={counts.reddit} />
         <DebugMetric label="Web" value={counts.web} />
         <DebugMetric label="Merged" value={counts.merged} />
         <DebugMetric label="Returned" value={counts.returned} />
       </div>
-      {(counts.geoapifyCalls ?? 0) > 0 && (
-        <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-4">
-          <DebugMetric label="Geo calls" value={counts.geoapifyCalls ?? 0} />
-          <DebugMetric
-            label="Geo credits"
-            value={counts.geoapifyEstimatedCredits ?? 0}
-          />
-          <DebugMetric label="Geo deduped" value={counts.geoapifyDeduped ?? 0} />
-          <DebugMetric
-            label="Geo evidence"
-            value={counts.geoapifyEvidenceVerified ?? 0}
-          />
-        </div>
-      )}
-
+      <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-4">
+        <DebugMetric label="Places calls" value={counts.googlePlacesCalls ?? 0} />
+        <DebugMetric
+          label="Places credits"
+          value={counts.googlePlacesEstimatedCredits ?? 0}
+        />
+        <DebugMetric label="Places deduped" value={counts.googlePlacesDeduped ?? 0} />
+        <DebugMetric
+          label="Places evidence"
+          value={counts.googlePlacesEvidenceVerified ?? 0}
+        />
+      </div>
       {debug.timedOutStages.length > 0 && (
         <DebugList label="Timed out / failed stages" values={debug.timedOutStages} />
       )}
@@ -796,7 +839,7 @@ function DiscoveryEmptyState({
       {debug.visitedUrls.length > 0 && (
         <DebugList label="Visited URLs" values={debug.visitedUrls.slice(0, 5)} />
       )}
-    </div>
+    </>
   );
 }
 

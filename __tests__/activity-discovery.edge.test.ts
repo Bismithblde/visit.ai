@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectDiscoveryContent } from "@/lib/activity-discovery/content-collector";
-import { retrieveGeoapifyCandidates } from "@/lib/activity-discovery/geoapify";
+import { retrieveGooglePlacesCandidates } from "@/lib/activity-discovery/google-places";
 import { fallbackIntentProfile, filterAndRankOsmCandidates } from "@/lib/activity-discovery/intent";
 import { buildMergedActivities, finalRankAndDiversify } from "@/lib/activity-discovery/merge-rank";
 import {
@@ -241,39 +241,54 @@ describe("activity discovery edge cases", () => {
     ).toBe(8000);
   });
 
-  test("Geoapify retrieval normalizes bubble tea and mixed bakery candidates", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  test("Google Places retrieval normalizes bubble tea and mixed bakery candidates", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
+      expect(url.hostname).toBe("places.googleapis.com");
 
-      expect(url.hostname).toBe("api.geoapify.com");
-      expect(url.searchParams.get("apiKey")).toBe("geoapify-test-key");
-      expect(url.searchParams.get("filter")).toContain("circle:-73.7949,40.7282,5000");
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        const id = decodeURIComponent(url.pathname.replace("/v1/places/", ""));
+        return jsonResponse(googlePlaceDetails(id));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({
+        "X-Goog-Api-Key": "google-places-test-key",
+      });
+      expect(body.textQuery).not.toContain("Queens");
+      expect(body.locationBias).toMatchObject({
+        circle: {
+          center: { latitude: 40.7282, longitude: -73.7949 },
+          radius: 5000,
+        },
+      });
 
       return jsonResponse({
-        features: [
+        places: [
           {
-            geometry: { coordinates: [-73.82, 40.75] },
-            properties: {
-              place_id: "bubble-1",
-              name: "Tiger Sugar",
-              formatted: "Tiger Sugar, Flushing, NY",
-              categories: ["catering.cafe.bubble_tea", "catering.cafe"],
-              lat: 40.75,
-              lon: -73.82,
-              distance: 450,
-            },
+            id: "bubble-1",
+            displayName: { text: "Tiger Sugar" },
+            formattedAddress: "Tiger Sugar, Flushing, NY",
+            types: ["bubble_tea_store", "cafe", "food"],
+            primaryType: "bubble_tea_store",
+            location: { latitude: 40.75, longitude: -73.82 },
+            rating: 4.6,
+            userRatingCount: 300,
+            googleMapsUri: "https://maps.google.com/?cid=bubble-1",
           },
           {
-            geometry: { coordinates: [-73.81, 40.74] },
-            properties: {
-              place_id: "croffle-1",
-              name: "Croffle House",
-              formatted: "Croffle House, Flushing, NY",
-              categories: ["commercial.food_and_drink.bakery", "catering.cafe"],
-              lat: 40.74,
-              lon: -73.81,
-              distance: 800,
-            },
+            id: "croffle-1",
+            displayName: { text: "Croffle House" },
+            formattedAddress: "Croffle House, Flushing, NY",
+            types: ["bakery", "cafe", "food"],
+            primaryType: "bakery",
+            location: { latitude: 40.74, longitude: -73.81 },
+            rating: 4.4,
+            userRatingCount: 120,
           },
         ],
       });
@@ -296,8 +311,8 @@ describe("activity discovery edge cases", () => {
         number,
       ],
     };
-    const result = await retrieveGeoapifyCandidates({
-      apiKey: "geoapify-test-key",
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
       request: bubbleTeaRequest,
       location,
       intent: fallbackIntentProfile(bubbleTeaRequest),
@@ -309,26 +324,144 @@ describe("activity discovery edge cases", () => {
     });
 
     expect(result.debug).toMatchObject({
-      calls: 3,
-      estimatedCredits: 3,
+      calls: 5,
+      estimatedCredits: 5,
       rawCandidates: 6,
       dedupedCandidates: 2,
     });
     expect(result.candidates).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          provider: "geoapify",
+          provider: "google_places",
           placeName: "Tiger Sugar",
-          category: "geoapify:catering.cafe.bubble_tea",
+          category: "google_places:bubble_tea_store",
           tags: expect.arrayContaining(["bubble tea", "food"]),
+          rating: 4.6,
+          reviewCount: 300,
+          reviewSummary: expect.stringContaining("Great bubble tea"),
         }),
         expect.objectContaining({
-          provider: "geoapify",
+          provider: "google_places",
           placeName: "Croffle House",
           tags: expect.arrayContaining(["bakery"]),
         }),
       ]),
     );
+    expect(textQueries).toEqual(
+      expect.arrayContaining([
+        "bubble tea",
+        "croffle",
+        "asian desserts",
+      ]),
+    );
+    expect(textQueries).toHaveLength(3);
+  });
+
+  test("Google Places query planning drops filler words and keeps only specific subjects", async () => {
+    const textQueries: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        const id = decodeURIComponent(url.pathname.replace("/v1/places/", ""));
+        return jsonResponse(googlePlaceDetails(id));
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textQueries.push(body.textQuery);
+
+      return jsonResponse({
+        places: [
+          {
+            id: "bubble-1",
+            displayName: { text: "Tiger Sugar" },
+            formattedAddress: "Tiger Sugar, Flushing, NY",
+            types: ["bubble_tea_store", "cafe", "food"],
+            primaryType: "bubble_tea_store",
+            location: { latitude: 40.75, longitude: -73.82 },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bubbleTeaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "I only want to drink bubble tea.",
+      searchMode: "fast",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: bubbleTeaRequest,
+      location,
+      intent: fallbackIntentProfile(bubbleTeaRequest),
+      searchArea: resolveBusinessSearchArea(
+        location,
+        fallbackIntentProfile(bubbleTeaRequest),
+        "balanced",
+      ),
+    });
+
+    expect(result.debug.queries).toEqual(["bubble tea"]);
+    expect(textQueries).toEqual(["bubble tea"]);
+    expect(result.debug.calls).toBe(2);
+  });
+
+  test("Google Places records provider errors instead of looking like empty results", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: {
+            message: "Invalid field mask.",
+          },
+        },
+        400,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bubbleTeaRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "bubble tea",
+      searchMode: "fast",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: bubbleTeaRequest,
+      location,
+      intent: fallbackIntentProfile(bubbleTeaRequest),
+      searchArea: resolveBusinessSearchArea(
+        location,
+        fallbackIntentProfile(bubbleTeaRequest),
+        "balanced",
+      ),
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.debug.errors[0]).toContain("Google Places Text Search failed");
+    expect(result.debug.errors[0]).toContain("Invalid field mask");
   });
 
   test("collects ranked pages with fallback snippets and records failed URLs", async () => {
@@ -466,7 +599,7 @@ describe("activity discovery edge cases", () => {
     );
   });
 
-  test("Geoapify direct matches rank above weak OSM-only candidates", () => {
+  test("Google Places direct matches rank above weak OSM-only candidates", () => {
     const bubbleTeaRequest: ActivityDiscoveryRequest = {
       ...request,
       preferencePrompt: "bubble tea with friends",
@@ -475,12 +608,12 @@ describe("activity discovery edge cases", () => {
       request: bubbleTeaRequest,
       osmCandidates: [
         osmCandidate({
-          provider: "geoapify",
-          osmId: "geo-1",
-          osmType: "geoapify",
+          provider: "google_places",
+          osmId: "google-1",
+          osmType: "google_places",
           placeName: "Gong Cha",
-          category: "geoapify:catering.cafe.bubble_tea",
-          providerCategories: ["catering.cafe.bubble_tea"],
+          category: "google_places:bubble_tea_store",
+          providerCategories: ["bubble_tea_store"],
           tags: ["food", "bubble tea", "catering cafe bubble tea"],
           possibleActivities: ["bubble tea stop", "food stop"],
         }),
@@ -497,7 +630,7 @@ describe("activity discovery edge cases", () => {
 
     expect(merged[0]).toMatchObject({
       placeName: "Gong Cha",
-      source: "geoapify",
+      source: "google_places",
       fitsPreference: true,
     });
   });
@@ -543,4 +676,49 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function googlePlaceDetails(id: string) {
+  if (id === "croffle-1") {
+    return {
+      id,
+      displayName: { text: "Croffle House" },
+      formattedAddress: "Croffle House, Flushing, NY",
+      types: ["bakery", "cafe", "food"],
+      primaryType: "bakery",
+      location: { latitude: 40.74, longitude: -73.81 },
+      rating: 4.4,
+      userRatingCount: 120,
+      googleMapsUri: "https://maps.google.com/?cid=croffle-1",
+      reviews: [
+        {
+          rating: 4,
+          relativePublishTimeDescription: "2 weeks ago",
+          text: { text: "Fresh croffles and pastries." },
+          authorAttribution: { displayName: "Lee" },
+        },
+      ],
+    };
+  }
+
+  return {
+    id,
+    displayName: { text: "Tiger Sugar" },
+    formattedAddress: "Tiger Sugar, Flushing, NY",
+    types: ["bubble_tea_store", "cafe", "food"],
+    primaryType: "bubble_tea_store",
+    location: { latitude: 40.75, longitude: -73.82 },
+    rating: 4.6,
+    userRatingCount: 300,
+    googleMapsUri: "https://maps.google.com/?cid=bubble-1",
+    editorialSummary: { text: "Known for brown sugar bubble tea." },
+    reviews: [
+      {
+        rating: 5,
+        relativePublishTimeDescription: "a month ago",
+        text: { text: "Great bubble tea and fast service." },
+        authorAttribution: { displayName: "Sam" },
+      },
+    ],
+  };
 }

@@ -12,12 +12,12 @@ export interface ActivityDiscoveryRequest {
 }
 
 export type DiscoverySource =
-  | "geoapify"
+  | "google_places"
   | "osm"
   | "reddit"
   | "web"
-  | "geoapify+reddit"
-  | "geoapify+web"
+  | "google_places+reddit"
+  | "google_places+web"
   | "osm+reddit"
   | "osm+web"
   | "mixed";
@@ -46,7 +46,7 @@ export interface ActivityDiscoveryItem {
     category: string;
   };
   provider?: {
-    name: "osm" | "geoapify";
+    name: "osm" | "google_places";
     id: string;
     categories?: string[];
     formattedAddress?: string;
@@ -75,11 +75,11 @@ export interface DiscoveryDebug {
   timedOutStages: string[];
   intentProfile?: IntentProfile;
   sourceCounts: {
-    geoapify: number;
-    geoapifyCalls: number;
-    geoapifyEstimatedCredits: number;
-    geoapifyDeduped: number;
-    geoapifyEvidenceVerified: number;
+    googlePlaces: number;
+    googlePlacesCalls: number;
+    googlePlacesEstimatedCredits: number;
+    googlePlacesDeduped: number;
+    googlePlacesEvidenceVerified: number;
     osm: number;
     intentFiltered: number;
     reviewVerified: number;
@@ -133,11 +133,15 @@ export interface DiscoveryToolDebug {
 }
 
 export interface OSMCandidate {
-  provider?: "osm" | "geoapify";
+  provider?: "osm" | "google_places";
   providerCategories?: string[];
   formattedAddress?: string;
   distanceMeters?: number;
   estimatedCredits?: number;
+  rating?: number;
+  reviewCount?: number;
+  reviewSummary?: string;
+  sourceUrls?: string[];
   activityName: string;
   placeName: string;
   osmId: string;
