@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectDiscoveryContent } from "@/lib/activity-discovery/content-collector";
+import { fallbackSocialCandidatesFromPages } from "@/lib/activity-discovery/discover";
 import { retrieveGooglePlacesCandidates } from "@/lib/activity-discovery/google-places";
 import { fallbackIntentProfile, filterAndRankOsmCandidates } from "@/lib/activity-discovery/intent";
 import { buildMergedActivities, finalRankAndDiversify } from "@/lib/activity-discovery/merge-rank";
@@ -171,6 +172,56 @@ describe("activity discovery edge cases", () => {
         preferencePrompt: "food + boba",
       }),
     ).rejects.toThrow("unsupported keyword minItems");
+  });
+
+  test("OpenAI social extraction uses the query model instead of generic activity model", async () => {
+    const originalActivityModel = process.env.OPENAI_ACTIVITY_MODEL;
+    const originalQueryModel = process.env.OPENAI_ACTIVITY_QUERY_MODEL;
+    const originalExtractionModel = process.env.OPENAI_ACTIVITY_EXTRACTION_MODEL;
+    process.env.OPENAI_ACTIVITY_MODEL = "gpt-5-slow-test";
+    process.env.OPENAI_ACTIVITY_QUERY_MODEL = "gpt-4.1-mini";
+    delete process.env.OPENAI_ACTIVITY_EXTRACTION_MODEL;
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("gpt-4.1-mini");
+      return openAiJson({
+        candidates: [
+          {
+            activityName: "Flushing Food Crawl",
+            placeName: "Flushing",
+            sourceUrl: "https://example.com/flushing-food",
+            sourceType: "local_blog",
+            tags: ["food", "group-friendly"],
+            sentiment: "positive",
+            evidenceSummary: "The source recommends a food crawl for groups.",
+            confidenceScore: 0.7,
+            preferenceRelevanceScore: 0.8,
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = new OpenAIActivityClient("openai-test-key");
+      const candidates = await client.extractSocialCandidates(request, [
+        {
+          url: "https://example.com/flushing-food",
+          title: "Flushing food crawl",
+          sourceType: "local_blog",
+          content: "The source recommends a food crawl for groups.",
+        },
+      ]);
+
+      expect(candidates[0]).toMatchObject({
+        activityName: "Flushing Food Crawl",
+      });
+    } finally {
+      process.env.OPENAI_ACTIVITY_MODEL = originalActivityModel;
+      process.env.OPENAI_ACTIVITY_QUERY_MODEL = originalQueryModel;
+      process.env.OPENAI_ACTIVITY_EXTRACTION_MODEL = originalExtractionModel;
+    }
   });
 
   test("normalizes OSM geocode and Overpass results into activity candidates", async () => {
@@ -516,6 +567,192 @@ describe("activity discovery edge cases", () => {
     expect(result.debug.queries).toEqual(["bubble tea"]);
     expect(textQueries).toEqual(["bubble tea"]);
     expect(result.debug.calls).toBe(2);
+  });
+
+  test("Google Places follows up to three text search pages per query", async () => {
+    const textBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        const id = decodeURIComponent(url.pathname.replace("/v1/places/", ""));
+        return jsonResponse({
+          id,
+          displayName: { text: `Paged Place ${id}` },
+          formattedAddress: "Flushing, NY",
+          types: ["restaurant", "food"],
+          primaryType: "restaurant",
+          location: { latitude: 40.75, longitude: -73.82 },
+        });
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textBodies.push(body);
+      const page = textBodies.length;
+
+      return jsonResponse({
+        places: [
+          {
+            id: `paged-${page}`,
+            displayName: { text: `Paged Place ${page}` },
+            formattedAddress: "Flushing, NY",
+            types: ["restaurant", "food"],
+            primaryType: "restaurant",
+            location: { latitude: 40.75 + page / 1000, longitude: -73.82 },
+          },
+        ],
+        nextPageToken: page < 3 ? `token-${page}` : undefined,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pagedRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "food",
+      searchMode: "fast",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+    const intent = {
+      ...fallbackIntentProfile(pagedRequest),
+      googlePlaceSubjects: ["food"],
+      googlePlaceQueries: ["food"],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: pagedRequest,
+      location,
+      intent,
+      searchArea: resolveBusinessSearchArea(location, intent, "balanced"),
+    });
+
+    expect(textBodies).toHaveLength(3);
+    expect(textBodies.map((body) => body.pageSize)).toEqual([20, 20, 20]);
+    expect(textBodies.map((body) => body.pageToken)).toEqual([
+      undefined,
+      "token-1",
+      "token-2",
+    ]);
+    expect(textBodies.map(({ pageToken, ...body }) => body)).toEqual([
+      textBodies[0],
+      textBodies[0],
+      textBodies[0],
+    ]);
+    expect(result.debug).toMatchObject({
+      status: "completed",
+      calls: 6,
+      estimatedCredits: 6,
+      rawCandidates: 3,
+      dedupedCandidates: 3,
+    });
+    expect(result.candidates.map((candidate) => candidate.osmId)).toEqual([
+      "paged-1",
+      "paged-2",
+      "paged-3",
+    ]);
+  });
+
+  test("Google Places keeps earlier page candidates when a later page fails", async () => {
+    const textBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.startsWith("/v1/places/") && init?.method !== "POST") {
+        const id = decodeURIComponent(url.pathname.replace("/v1/places/", ""));
+        return jsonResponse({
+          id,
+          displayName: { text: "First Page Place" },
+          formattedAddress: "Flushing, NY",
+          types: ["restaurant", "food"],
+          primaryType: "restaurant",
+          location: { latitude: 40.75, longitude: -73.82 },
+        });
+      }
+
+      const body = JSON.parse(String(init?.body));
+      textBodies.push(body);
+
+      if (body.pageToken === "token-1") {
+        return jsonResponse(
+          {
+            error: {
+              message: "Expired page token.",
+            },
+          },
+          400,
+        );
+      }
+
+      return jsonResponse({
+        places: [
+          {
+            id: "first-page",
+            displayName: { text: "First Page Place" },
+            formattedAddress: "Flushing, NY",
+            types: ["restaurant", "food"],
+            primaryType: "restaurant",
+            location: { latitude: 40.75, longitude: -73.82 },
+          },
+        ],
+        nextPageToken: "token-1",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pagedRequest: ActivityDiscoveryRequest = {
+      ...request,
+      preferencePrompt: "food",
+      searchMode: "fast",
+    };
+    const location = {
+      query: "Queens",
+      latitude: 40.7282,
+      longitude: -73.7949,
+      boundingBox: [40.5, 40.9, -74.05, -73.7] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+    };
+    const intent = {
+      ...fallbackIntentProfile(pagedRequest),
+      googlePlaceSubjects: ["food"],
+      googlePlaceQueries: ["food"],
+    };
+
+    const result = await retrieveGooglePlacesCandidates({
+      apiKey: "google-places-test-key",
+      request: pagedRequest,
+      location,
+      intent,
+      searchArea: resolveBusinessSearchArea(location, intent, "balanced"),
+    });
+
+    expect(textBodies).toHaveLength(2);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      osmId: "first-page",
+      placeName: "First Page Place",
+    });
+    expect(result.debug).toMatchObject({
+      status: "failed",
+      calls: 3,
+      rawCandidates: 1,
+      dedupedCandidates: 1,
+    });
+    expect(result.debug.errors[0]).toContain("Google Places Text Search failed");
+    expect(result.debug.errors[0]).toContain("Expired page token");
   });
 
   test("Google Places runs multiple LLM-orchestrated bubble tea queries", async () => {
@@ -939,6 +1176,15 @@ describe("activity discovery edge cases", () => {
       "https://plain.example.com/activities",
       "https://example.com/debug-failure",
     ]);
+    expect(result.debug.tavily).toMatchObject({
+      searchRequests: 1,
+      searchResults: 2,
+      rankedUrls: 2,
+      extractedPages: 2,
+      snippetPages: 0,
+      fallbackPages: 1,
+      failedExtracts: 1,
+    });
     expect(result.pages).toHaveLength(2);
     expect(result.pages[0].content).toHaveLength(3000);
     expect(result.pages[1]).toMatchObject({
@@ -946,6 +1192,71 @@ describe("activity discovery edge cases", () => {
       title: "Plain higher duplicate",
       sourceType: "other",
     });
+  });
+
+  test("collects Tavily search errors in debug when searches fail", async () => {
+    const tool: DiscoveryTool & { debug: { errors: string[]; credits: number } } = {
+      debug: {
+        errors: ["Tavily /search failed with 429 Too Many Requests"],
+        credits: 1,
+      },
+      async web_search() {
+        throw new Error("rate limited");
+      },
+      async extract_page() {
+        throw new Error("should not extract");
+      },
+      async crawl_page() {
+        return [];
+      },
+    };
+
+    const result = await collectDiscoveryContent(request, ["query one"], tool);
+
+    expect(result.pages).toEqual([]);
+    expect(result.debug.tavily).toMatchObject({
+      searchRequests: 1,
+      searchResults: 0,
+      rankedUrls: 0,
+      extractedPages: 0,
+      snippetPages: 0,
+      fallbackPages: 0,
+      credits: 1,
+    });
+    expect(result.debug.tavily.errors).toEqual([
+      "query one: rate limited",
+      "Tavily /search failed with 429 Too Many Requests",
+    ]);
+  });
+
+  test("builds fallback social candidates from Tavily pages when OpenAI extraction times out", () => {
+    const candidates = fallbackSocialCandidatesFromPages(
+      {
+        ...request,
+        cityOrLocation: "Flushing, NY",
+        preferencePrompt: "food and boba for a group",
+      },
+      [
+        {
+          url: "https://www.reddit.com/r/FoodNYC/comments/sample",
+          title: "Flushing food crawl",
+          sourceType: "reddit",
+          content:
+            "Locals recommend a group food crawl with dumplings, bakeries, and bubble tea stops around Main Street.",
+        },
+      ],
+    );
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        activityName: "Flushing Food Crawl",
+        sourceUrl: "https://www.reddit.com/r/FoodNYC/comments/sample",
+        sourceType: "reddit",
+        tags: expect.arrayContaining(["food", "bubble tea", "group-friendly"]),
+        confidenceScore: 0.58,
+        preferenceRelevanceScore: expect.any(Number),
+      }),
+    ]);
   });
 
   test("merges OSM and social evidence, dedupes, and diversifies final ranking", () => {

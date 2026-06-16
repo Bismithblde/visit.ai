@@ -10,9 +10,11 @@ const GOOGLE_PLACES_TEXT_SEARCH_URL =
   "https://places.googleapis.com/v1/places:searchText";
 const GOOGLE_PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places";
 const RESULTS_PER_CALL = 20;
+const GOOGLE_PLACES_MAX_PAGES = 3;
 const TEXT_SEARCH_TIMEOUT_MS = 3000;
 const PLACE_DETAILS_TIMEOUT_MS = 1500;
 const TEXT_SEARCH_FIELD_MASK = [
+  "nextPageToken",
   "places.id",
   "places.displayName",
   "places.formattedAddress",
@@ -42,6 +44,7 @@ const PLACE_DETAILS_FIELD_MASK = [
 
 interface GooglePlacesTextSearchResponse {
   places?: GooglePlace[];
+  nextPageToken?: string;
 }
 
 interface GooglePlace {
@@ -173,6 +176,11 @@ export async function retrieveGooglePlacesCandidates({
       ? result.value.errors
       : [errorMessage(result.reason)],
   );
+  const searchCalls = settled.reduce(
+    (total, result) =>
+      total + (result.status === "fulfilled" ? result.value.calls : 1),
+    0,
+  );
   const rawCandidates = settled.flatMap((result) =>
     result.status === "fulfilled" ? result.value.candidates : [],
   );
@@ -188,8 +196,8 @@ export async function retrieveGooglePlacesCandidates({
     candidates,
     debug: {
       status: errors.length + details.errors.length > 0 ? "failed" : "completed",
-      calls: specs.length + details.calls,
-      estimatedCredits: specs.length + details.calls,
+      calls: searchCalls + details.calls,
+      estimatedCredits: searchCalls + details.calls,
       rawCandidates: rawCandidates.length,
       dedupedCandidates: candidates.length,
       queries: specs.map((spec) => spec.label),
@@ -368,46 +376,72 @@ async function searchGooglePlaces({
   apiKey: string;
   locationConstraint: GooglePlacesLocationConstraint;
   spec: GooglePlacesSearchSpec;
-}): Promise<{ candidates: OSMCandidate[]; errors: string[] }> {
+}): Promise<{ candidates: OSMCandidate[]; errors: string[]; calls: number }> {
   const areaBody = locationConstraint.filter
     ? { locationRestriction: locationConstraint.filter }
     : locationConstraint.bias
       ? { locationBias: locationConstraint.bias }
       : {};
-  const body = {
+  const baseBody = {
     textQuery: spec.query,
     pageSize: RESULTS_PER_CALL,
     languageCode: "en",
     ...areaBody,
   };
+  const candidates: OSMCandidate[] = [];
+  const errors: string[] = [];
+  let calls = 0;
+  let pageToken: string | undefined;
 
-  const response = await fetchWithTimeout(
-    GOOGLE_PLACES_TEXT_SEARCH_URL,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": TEXT_SEARCH_FIELD_MASK,
-      },
-      body: JSON.stringify(body),
-      cache: "no-store",
-    },
-    TEXT_SEARCH_TIMEOUT_MS,
-  );
+  for (let page = 0; page < GOOGLE_PLACES_MAX_PAGES; page += 1) {
+    const body = pageToken ? { ...baseBody, pageToken } : baseBody;
+    calls += 1;
 
-  if (!response.ok) {
-    throw new Error(
-      await googlePlacesErrorMessage(response, "Text Search", spec.query),
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(
+        GOOGLE_PLACES_TEXT_SEARCH_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+            "X-Goog-FieldMask": TEXT_SEARCH_FIELD_MASK,
+          },
+          body: JSON.stringify(body),
+          cache: "no-store",
+        },
+        TEXT_SEARCH_TIMEOUT_MS,
+      );
+    } catch (error) {
+      errors.push(errorMessage(error));
+      break;
+    }
+
+    if (!response.ok) {
+      errors.push(
+        await googlePlacesErrorMessage(response, "Text Search", spec.query),
+      );
+      break;
+    }
+
+    const data = (await response.json()) as GooglePlacesTextSearchResponse;
+    candidates.push(
+      ...(data.places ?? [])
+        .map((place) => normalizeGooglePlace(place, spec))
+        .filter((candidate): candidate is OSMCandidate => Boolean(candidate)),
     );
+    pageToken = cleanText(data.nextPageToken ?? "") || undefined;
+
+    if (!pageToken) {
+      break;
+    }
   }
 
-  const data = (await response.json()) as GooglePlacesTextSearchResponse;
   return {
-    candidates: (data.places ?? [])
-      .map((place) => normalizeGooglePlace(place, spec))
-      .filter((candidate): candidate is OSMCandidate => Boolean(candidate)),
-    errors: [],
+    candidates,
+    errors,
+    calls,
   };
 }
 

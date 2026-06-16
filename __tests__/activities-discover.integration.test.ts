@@ -168,8 +168,13 @@ describe("POST /api/activities/discover", () => {
           Authorization: "Bearer tavily-test-key",
           "Content-Type": "application/json",
         });
+        const body = JSON.parse(String(init?.body));
+        expect(body.country).toBeUndefined();
+        expect(body.include_usage).toBe(true);
 
         return jsonResponse({
+          request_id: "tavily-search-1",
+          usage: { credits: 1 },
           results: [
             {
               title: "Queens park thread",
@@ -257,6 +262,13 @@ describe("POST /api/activities/discover", () => {
     });
     expect(body.queryPlan).toContain("cheap outdoor activities Queens reddit");
     expect(body.debug.searchedQueries).toEqual(body.queryPlan);
+    expect(body.debug.tavily).toMatchObject({
+      searchRequests: body.queryPlan.length,
+      searchResults: 5,
+      rankedUrls: 1,
+      credits: 5,
+      requestIds: ["tavily-search-1"],
+    });
   });
 
   test("plans food plus boba into separate Google Places queries when isolated to Google", async () => {

@@ -36,10 +36,26 @@ interface VerificationResult {
 }
 
 export class OpenAIActivityClient {
+  private readonly queryModel: string;
+  private readonly extractionModel: string;
+  private readonly verificationModel: string;
+
   constructor(
     private readonly apiKey: string,
-    private readonly model = process.env.OPENAI_ACTIVITY_MODEL || DEFAULT_OPENAI_MODEL,
-  ) {}
+    model = process.env.OPENAI_ACTIVITY_QUERY_MODEL || DEFAULT_OPENAI_MODEL,
+  ) {
+    this.queryModel = model;
+    this.extractionModel =
+      process.env.OPENAI_ACTIVITY_EXTRACTION_MODEL ||
+      process.env.OPENAI_ACTIVITY_QUERY_MODEL ||
+      model ||
+      DEFAULT_OPENAI_MODEL;
+    this.verificationModel =
+      process.env.OPENAI_ACTIVITY_VERIFICATION_MODEL ||
+      process.env.OPENAI_ACTIVITY_QUERY_MODEL ||
+      model ||
+      DEFAULT_OPENAI_MODEL;
+  }
 
   async generateQueryPlan(request: ActivityDiscoveryRequest) {
     const fallback = fallbackQueries(request);
@@ -58,6 +74,7 @@ export class OpenAIActivityClient {
       ].join("\n"),
       JSON.stringify({ request }),
       queryPlanSchema,
+      this.queryModel,
     );
     const fallbackIntent = fallbackIntentProfile(request);
 
@@ -100,6 +117,7 @@ export class OpenAIActivityClient {
         })),
       }),
       socialExtractionSchema,
+      this.extractionModel,
     );
 
     return (result.candidates ?? [])
@@ -147,6 +165,7 @@ export class OpenAIActivityClient {
         })),
       }),
       verificationSchema,
+      this.verificationModel,
     );
 
     const byName = new Map(activities.map((activity) => [activity.activityName, activity]));
@@ -168,6 +187,7 @@ export class OpenAIActivityClient {
     instructions: string,
     input: string,
     schema: Record<string, unknown>,
+    model: string,
   ): Promise<T> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -176,7 +196,7 @@ export class OpenAIActivityClient {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: this.model,
+        model,
         instructions,
         input,
         text: {

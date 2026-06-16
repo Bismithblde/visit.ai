@@ -41,6 +41,8 @@ import type {
 } from "./types";
 
 const SOFT_BUDGET_MS = 43_000;
+const SOCIAL_EXTRACTION_BATCH_SIZE = 3;
+const SOCIAL_EXTRACTION_TIMEOUT_MS = 12_000;
 const DEFAULT_EMPTY_LOCATION: DiscoveryLocation = { query: "" };
 
 export async function discoverActivities(
@@ -147,6 +149,7 @@ export async function discoverActivities(
               searchedQueries: boundedQueries,
               visitedUrls: [],
               failedUrls: [],
+              tavily: emptyTavilyDebug(boundedQueries.length),
             },
           },
         )
@@ -156,6 +159,7 @@ export async function discoverActivities(
             searchedQueries: [] as string[],
             visitedUrls: [],
             failedUrls: [],
+            tavily: emptyTavilyDebug(0),
           },
         });
 
@@ -245,6 +249,7 @@ export async function discoverActivities(
     timedOutStages,
     stageErrors,
     reviewQueries: reviewResult.reviewQueries,
+    tavilyDebug: content.debug.tavily,
     intentProfile: queryPlan.intentProfile,
     googlePlacesDebug: googlePlacesResult.debug,
     osmCount: osmCandidates.length,
@@ -303,29 +308,66 @@ async function extractSocialWithBudget({
     if (pages.length > 0) {
       timedOutStages.push("openai-social-extraction");
     }
-    return [];
+    return fallbackSocialCandidatesFromPages(request, pages);
   }
 
-  const batches = chunkPages(pages, 6);
+  const batches = chunkPages(pages, SOCIAL_EXTRACTION_BATCH_SIZE);
   const results: SocialCandidate[] = [];
 
   for (const [index, batch] of batches.entries()) {
     if (remainingMs(deadline) < 2500) {
       timedOutStages.push("openai-social-extraction");
+      results.push(...fallbackSocialCandidatesFromPages(request, batch));
       break;
     }
 
+    const fallback = fallbackSocialCandidatesFromPages(request, batch);
     const extracted = await withTimeout(
       openAi.extractSocialCandidates(request, batch),
-      Math.min(remainingMs(deadline), 9000),
+      Math.min(remainingMs(deadline), SOCIAL_EXTRACTION_TIMEOUT_MS),
       `openai-social-extraction-${index}`,
       timedOutStages,
-      [],
+      fallback,
     );
-    results.push(...extracted);
+    results.push(...(extracted.length > 0 ? extracted : fallback));
   }
 
-  return results;
+  return dedupeSocialCandidates(results);
+}
+
+export function fallbackSocialCandidatesFromPages(
+  request: ActivityDiscoveryRequest,
+  pages: PageContent[],
+): SocialCandidate[] {
+  return pages
+    .map((page) => {
+      const title = cleanText(page.title ?? "");
+      const preview = cleanText(page.content).slice(0, 420);
+      const activityName = fallbackActivityName(title, request);
+
+      if (!activityName || !page.url) {
+        return null;
+      }
+
+      const candidate: SocialCandidate = {
+        activityName,
+        placeName: fallbackPlaceName(title, request.cityOrLocation),
+        sourceUrl: page.url,
+        sourceType: page.sourceType,
+        tags: fallbackTags(`${title} ${preview}`, request.preferencePrompt),
+        sentiment: "unknown" as const,
+        evidenceSummary: preview
+          ? `${title || "Source"} mentions: ${preview}`.slice(0, 500)
+          : `${title || "Source"} appeared in Tavily results for ${request.cityOrLocation}.`,
+        confidenceScore: page.sourceType === "reddit" ? 0.58 : 0.5,
+        preferenceRelevanceScore: fallbackPreferenceScore(
+          `${title} ${preview}`,
+          request.preferencePrompt,
+        ),
+      };
+      return candidate;
+    })
+    .filter((candidate): candidate is SocialCandidate => Boolean(candidate));
 }
 
 async function retrieveGooglePlacesWithBudget({
@@ -606,6 +648,7 @@ function buildDebug({
   timedOutStages,
   stageErrors,
   reviewQueries,
+  tavilyDebug,
   intentProfile,
   googlePlacesDebug,
   osmCount,
@@ -621,6 +664,7 @@ function buildDebug({
   timedOutStages: string[];
   stageErrors: string[];
   reviewQueries: string[];
+  tavilyDebug: DiscoveryDebug["tavily"];
   intentProfile: DiscoveryDebug["intentProfile"];
   googlePlacesDebug: GooglePlacesRetrievalResult["debug"];
   osmCount: number;
@@ -641,6 +685,7 @@ function buildDebug({
     failedUrls: uniqueStrings(failedUrls),
     timedOutStages: uniqueStrings(timedOutStages),
     stageErrors: uniqueStrings(stageErrors),
+    tavily: tavilyDebug,
     intentProfile,
     sourceCounts: {
       googlePlaces: googlePlacesDebug.rawCandidates,
@@ -659,6 +704,98 @@ function buildDebug({
       returned: returnedCount,
     },
   };
+}
+
+function emptyTavilyDebug(searchRequests: number): NonNullable<DiscoveryDebug["tavily"]> {
+  return {
+    searchRequests,
+    searchResults: 0,
+    rankedUrls: 0,
+    extractedPages: 0,
+    snippetPages: 0,
+    fallbackPages: 0,
+    failedExtracts: 0,
+    credits: 0,
+    requestIds: [],
+    resultUrls: [],
+    errors: [],
+  };
+}
+
+function fallbackActivityName(title: string, request: ActivityDiscoveryRequest) {
+  const cleanedTitle = title
+    .replace(/\b(reddit|thread|comments?|recommendations?|guide)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleanedTitle) {
+    return titleCase(cleanedTitle).slice(0, 120);
+  }
+
+  const prompt = cleanText(request.preferencePrompt || "local activity");
+  return titleCase(`${prompt} in ${request.cityOrLocation}`).slice(0, 120);
+}
+
+function fallbackPlaceName(title: string, location: string) {
+  const cleanedTitle = cleanText(title);
+  if (!cleanedTitle) {
+    return location;
+  }
+
+  const withoutLocation = cleanedTitle
+    .replace(new RegExp(`\\b${escapeRegExp(location)}\\b`, "gi"), "")
+    .replace(/\b(reddit|thread|comments?|recommendations?|guide)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (withoutLocation || cleanedTitle).slice(0, 120);
+}
+
+function fallbackTags(text: string, prompt: string) {
+  const haystack = `${text} ${prompt}`.toLowerCase();
+  const tags = new Set<string>();
+
+  if (/\breddit|locals?|commenters?\b/.test(haystack)) tags.add("local favorite");
+  if (/\b(food|eat|restaurant|restaurants|crawl|dining)\b/.test(haystack)) tags.add("food");
+  if (/\b(boba|bubble tea|milk tea|tea)\b/.test(haystack)) tags.add("bubble tea");
+  if (/\b(group|friends|family)\b/.test(haystack)) tags.add("group-friendly");
+  if (/\bcheap|affordable|budget|free\b/.test(haystack)) tags.add("cheap");
+  if (/\bwalk|walking|park|outdoor|outside\b/.test(haystack)) tags.add("outdoor");
+  if (/\bmuseum|gallery|culture|cultural\b/.test(haystack)) tags.add("cultural");
+
+  return [...tags].slice(0, 14);
+}
+
+function fallbackPreferenceScore(text: string, prompt: string) {
+  const terms = prompt
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length > 2);
+
+  if (terms.length === 0) {
+    return 0.45;
+  }
+
+  const haystack = text.toLowerCase();
+  const matches = terms.filter((term) => haystack.includes(term)).length;
+  return Math.max(0.35, Math.min(0.82, matches / Math.min(terms.length, 8)));
+}
+
+function dedupeSocialCandidates(candidates: SocialCandidate[]) {
+  const byKey = new Map<string, SocialCandidate>();
+
+  for (const candidate of candidates) {
+    const key = `${candidate.sourceUrl}:${normalizeForKey(candidate.activityName)}`;
+    const existing = byKey.get(key);
+    if (
+      !existing ||
+      candidate.preferenceRelevanceScore > existing.preferenceRelevanceScore
+    ) {
+      byKey.set(key, candidate);
+    }
+  }
+
+  return [...byKey.values()];
 }
 
 function chunkPages(pages: PageContent[], size: number) {
@@ -716,11 +853,11 @@ function reviewBudgetMs(searchMode: ActivityDiscoveryRequest["searchMode"]) {
 function googlePlacesBudgetMs(searchMode: ActivityDiscoveryRequest["searchMode"]) {
   switch (searchMode) {
     case "fast":
-      return 3500;
+      return 10_000;
     case "deep":
-      return 8000;
+      return 18_000;
     default:
-      return 5500;
+      return 14_000;
   }
 }
 
@@ -730,6 +867,29 @@ function remainingMs(deadline: number) {
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values)];
+}
+
+function cleanText(value: string) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function titleCase(value: string) {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function normalizeForKey(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function providerEnabled(

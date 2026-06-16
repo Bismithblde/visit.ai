@@ -93,6 +93,7 @@ describe("trip planner page integration", () => {
           activities: [
             {
               activityName: "Quiet Breakfast Market",
+              placeName: "Mercado Quieto",
               evidenceSummary: "A calm morning market stop.",
               reason: "Matches your food preference",
               tags: ["breakfast"],
@@ -106,6 +107,7 @@ describe("trip planner page integration", () => {
             },
             {
               activityName: "Hidden Design Walk",
+              placeName: "Atelier Baixa",
               evidenceSummary: "A source-backed small group activity in Lisbon.",
               reason: "Matches your walking preference",
               tags: ["design", "walking"],
@@ -132,31 +134,37 @@ describe("trip planner page integration", () => {
     expect(screen.getByText("Activities (3 days)")).toBeDefined();
 
     const discoveredActivity = screen.getByRole("checkbox", {
-      name: "Hidden Design Walk",
+      name: "Atelier Baixa",
     }) as HTMLInputElement;
     expect(discoveredActivity.checked).toBe(false);
     expect(screen.getAllByText("Price TBD")).toHaveLength(2);
     expect(screen.getByText("Time TBD - Baixa")).toBeDefined();
     expect(screen.getByText("82% match")).toBeDefined();
     expect(screen.getByText("4.8 stars (124)")).toBeDefined();
-    expect(screen.getByText("+1")).toBeDefined();
+    expect(screen.queryByText("Source 1")).toBeNull();
+    expect(screen.queryByText("+1")).toBeNull();
+    expect(
+      screen.getByText(
+        "Recommended near Baixa for design and walking, with a 82% match to your trip preferences. It has a 4.8 star rating across 124 reviews.",
+      ),
+    ).toBeDefined();
     expect(
       screen
         .getAllByRole("checkbox")
         .map((checkbox) => checkbox.getAttribute("aria-label")),
     ).toEqual(
-      expect.arrayContaining(["Hidden Design Walk", "Quiet Breakfast Market"]),
+      expect.arrayContaining(["Atelier Baixa", "Mercado Quieto"]),
     );
     expect(
       screen
         .getAllByRole("checkbox")
         .map((checkbox) => checkbox.getAttribute("aria-label"))
-        .indexOf("Hidden Design Walk"),
+        .indexOf("Atelier Baixa"),
     ).toBeLessThan(
       screen
         .getAllByRole("checkbox")
         .map((checkbox) => checkbox.getAttribute("aria-label"))
-        .indexOf("Quiet Breakfast Market"),
+        .indexOf("Mercado Quieto"),
     );
 
     fireEvent.click(discoveredActivity);
@@ -164,7 +172,7 @@ describe("trip planner page integration", () => {
 
     expect(screen.getByText("Totals")).toBeDefined();
     expect(
-      screen.getAllByText(/Activity: Hidden Design Walk at Time TBD/),
+      screen.getAllByText(/Activity: Atelier Baixa at Time TBD/),
     ).toHaveLength(3);
     expect(screen.getByText("$2,609")).toBeDefined();
   });

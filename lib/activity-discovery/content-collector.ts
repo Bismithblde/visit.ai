@@ -16,6 +16,19 @@ interface CollectionDebug {
   searchedQueries: string[];
   visitedUrls: string[];
   failedUrls: string[];
+  tavily: {
+    searchRequests: number;
+    searchResults: number;
+    rankedUrls: number;
+    extractedPages: number;
+    snippetPages: number;
+    fallbackPages: number;
+    failedExtracts: number;
+    credits: number;
+    requestIds: string[];
+    resultUrls: string[];
+    errors: string[];
+  };
 }
 
 const EXTRACT_CONCURRENCY = 4;
@@ -31,6 +44,7 @@ export async function collectDiscoveryContent(
   const maxEvidencePages = getMaxEvidencePages(request.searchMode);
   const searchedQueries: string[] = [];
   const failedUrls: string[] = [];
+  const searchErrors: string[] = [];
 
   const searchSettled = await Promise.allSettled(
     queryPlan.map(async (query) => {
@@ -39,6 +53,13 @@ export async function collectDiscoveryContent(
     }),
   );
 
+  searchSettled.forEach((result, index) => {
+    if (result.status === "rejected") {
+      searchErrors.push(
+        `${queryPlan[index] ?? "unknown query"}: ${errorMessage(result.reason)}`,
+      );
+    }
+  });
   const searchResults = searchSettled.flatMap((result) =>
     result.status === "fulfilled" ? result.value : [],
   );
@@ -70,6 +91,26 @@ export async function collectDiscoveryContent(
         ...failedUrls,
         ...getToolDebugArray(tool, "failedUrls"),
       ]),
+      tavily: {
+        searchRequests: searchedQueries.length,
+        searchResults: searchResults.length,
+        rankedUrls: urls.length,
+        extractedPages: collected.filter((result) => result.page).length,
+        snippetPages: snippetUrls.filter((url) =>
+          Boolean(bestSearchResultByUrl.get(url)?.content),
+        ).length,
+        fallbackPages: collected.filter(
+          (result) => result.page && result.failedUrl,
+        ).length,
+        failedExtracts: failedUrls.length,
+        credits: getToolDebugNumber(tool, "credits"),
+        requestIds: uniqueStrings(getToolDebugArray(tool, "requestIds")),
+        resultUrls: urls,
+        errors: uniqueStrings([
+          ...searchErrors,
+          ...getToolDebugArray(tool, "errors"),
+        ]),
+      },
     },
   };
 }
@@ -232,6 +273,18 @@ function getToolDebugArray(tool: DiscoveryTool, key: string) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function getToolDebugNumber(tool: DiscoveryTool, key: string) {
+  const maybeDebug = tool as DiscoveryTool & {
+    debug?: Record<string, unknown>;
+  };
+  const value = maybeDebug.debug?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function uniqueStrings(values: string[]) {

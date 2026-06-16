@@ -82,6 +82,19 @@ export interface DiscoveryDebug {
   timedOutStages: string[];
   stageErrors?: string[];
   intentProfile?: IntentProfile;
+  tavily?: {
+    searchRequests: number;
+    searchResults: number;
+    rankedUrls: number;
+    extractedPages: number;
+    snippetPages: number;
+    fallbackPages: number;
+    failedExtracts: number;
+    credits: number;
+    requestIds: string[];
+    resultUrls: string[];
+    errors: string[];
+  };
   sourceCounts: {
     googlePlaces: number;
     googlePlacesCalls: number;
@@ -138,6 +151,9 @@ export interface DiscoveryTool {
 export interface DiscoveryToolDebug {
   visitedUrls: string[];
   failedUrls: string[];
+  requestIds?: string[];
+  credits?: number;
+  errors?: string[];
 }
 
 export interface OSMCandidate {

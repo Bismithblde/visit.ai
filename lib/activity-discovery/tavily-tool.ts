@@ -13,8 +13,11 @@ interface TavilySearchResponse {
     title?: string;
     url?: string;
     content?: string;
+    raw_content?: string | null;
     score?: number;
   }>;
+  usage?: { credits?: number };
+  request_id?: string;
 }
 
 interface TavilyExtractResponse {
@@ -25,6 +28,8 @@ interface TavilyExtractResponse {
     title?: string;
   }>;
   failed_results?: Array<{ url?: string; error?: string }>;
+  usage?: { credits?: number };
+  request_id?: string;
 }
 
 interface TavilyCrawlResponse {
@@ -34,12 +39,17 @@ interface TavilyCrawlResponse {
     content?: string;
     title?: string;
   }>;
+  usage?: { credits?: number };
+  request_id?: string;
 }
 
 export class TavilyDiscoveryTool implements DiscoveryTool {
   readonly debug: DiscoveryToolDebug = {
     visitedUrls: [],
     failedUrls: [],
+    requestIds: [],
+    credits: 0,
+    errors: [],
   };
 
   constructor(private readonly apiKey: string) {}
@@ -53,7 +63,7 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
       include_raw_content: false,
       include_images: false,
       include_favicon: false,
-      country: "united states",
+      include_usage: true,
     });
 
     return (response.results ?? [])
@@ -61,7 +71,7 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
       .map((result) => ({
         title: result.title ?? "",
         url: result.url ?? "",
-        content: result.content ?? "",
+        content: result.content ?? result.raw_content ?? "",
         score: typeof result.score === "number" ? result.score : 0,
       }));
   }
@@ -76,6 +86,7 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
       include_favicon: false,
       format: "markdown",
       timeout: 12,
+      include_usage: true,
     });
 
     const result = response.results?.[0];
@@ -83,7 +94,13 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
 
     if (!content.trim()) {
       this.debug.failedUrls.push(url);
-      throw new Error(`Tavily extract returned no content for ${url}`);
+      const failedReason = response.failed_results
+        ?.map((failed) => failed.error)
+        .filter(Boolean)
+        .join("; ");
+      throw new Error(
+        `Tavily extract returned no content for ${url}${failedReason ? `: ${failedReason}` : ""}`,
+      );
     }
 
     return {
@@ -108,6 +125,7 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
       include_favicon: false,
       format: "markdown",
       timeout: 30,
+      include_usage: true,
     });
 
     const pages = (response.results ?? [])
@@ -126,7 +144,10 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
     return pages;
   }
 
-  private async post<T>(path: string, body: Record<string, unknown>) {
+  private async post<T extends { request_id?: string; usage?: { credits?: number } }>(
+    path: string,
+    body: Record<string, unknown>,
+  ) {
     const response = await fetch(`${TAVILY_BASE_URL}${path}`, {
       method: "POST",
       headers: {
@@ -137,11 +158,22 @@ export class TavilyDiscoveryTool implements DiscoveryTool {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      const compactBody = errorBody.replace(/\s+/g, " ").trim().slice(0, 500);
+      const message = `Tavily ${path} failed with ${response.status} ${response.statusText}${compactBody ? `: ${compactBody}` : ""}`;
+      this.debug.errors?.push(message);
       throw new Error(
-        `Tavily ${path} failed with ${response.status} ${response.statusText}`,
+        message,
       );
     }
 
-    return (await response.json()) as T;
+    const data = (await response.json()) as T;
+    if (data.request_id) {
+      this.debug.requestIds?.push(data.request_id);
+    }
+    if (typeof data.usage?.credits === "number") {
+      this.debug.credits = (this.debug.credits ?? 0) + data.usage.credits;
+    }
+    return data;
   }
 }

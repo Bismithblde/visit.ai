@@ -101,6 +101,20 @@ interface DiscoveryDebug {
   visitedUrls: string[];
   failedUrls: string[];
   timedOutStages: string[];
+  stageErrors?: string[];
+  tavily?: {
+    searchRequests: number;
+    searchResults: number;
+    rankedUrls: number;
+    extractedPages: number;
+    snippetPages: number;
+    fallbackPages: number;
+    failedExtracts: number;
+    credits: number;
+    requestIds: string[];
+    resultUrls: string[];
+    errors: string[];
+  };
   sourceCounts: {
     googlePlaces?: number;
     googlePlacesCalls?: number;
@@ -870,9 +884,39 @@ function DiscoveryDebugContent({
           value={counts.googlePlacesEvidenceVerified ?? 0}
         />
       </div>
+      {debug.tavily && (
+        <div className="grid gap-2 rounded-[0.95rem] border border-[#e2e8df] bg-[#fbfaf7] p-3 sm:grid-cols-4 lg:grid-cols-8">
+          <DebugMetric label="Tavily searches" value={debug.tavily.searchRequests} />
+          <DebugMetric label="Tavily results" value={debug.tavily.searchResults} />
+          <DebugMetric label="Ranked URLs" value={debug.tavily.rankedUrls} />
+          <DebugMetric label="Extracted pages" value={debug.tavily.extractedPages} />
+          <DebugMetric label="Snippet pages" value={debug.tavily.snippetPages} />
+          <DebugMetric label="Fallback pages" value={debug.tavily.fallbackPages} />
+          <DebugMetric label="Failed extracts" value={debug.tavily.failedExtracts} />
+          <DebugMetric label="Tavily credits" value={debug.tavily.credits} />
+        </div>
+      )}
       {debug.timedOutStages.length > 0 && (
         <DebugList label="Timed out / failed stages" values={debug.timedOutStages} />
       )}
+      {debug.stageErrors && debug.stageErrors.length > 0 && (
+        <DebugList label="Stage errors" values={debug.stageErrors.slice(0, 5)} />
+      )}
+      {debug.tavily?.errors.length ? (
+        <DebugList label="Tavily errors" values={debug.tavily.errors.slice(0, 5)} />
+      ) : null}
+      {debug.tavily?.requestIds.length ? (
+        <DebugList
+          label="Tavily request IDs"
+          values={debug.tavily.requestIds.slice(0, 5)}
+        />
+      ) : null}
+      {debug.tavily?.resultUrls.length ? (
+        <DebugList
+          label="Tavily result URLs"
+          values={debug.tavily.resultUrls.slice(0, 8)}
+        />
+      ) : null}
       {debug.failedUrls.length > 0 && (
         <DebugList label="Failed URLs" values={debug.failedUrls.slice(0, 5)} />
       )}
@@ -1091,9 +1135,9 @@ function mapDiscoveryActivities(response: DiscoveryResponse) {
   if (Array.isArray(response.activities)) {
     return sortActivitiesByRating(
       response.activities.map((activity, index) => ({
-        id: `${slugify(activity.activityName)}-${index}`,
-        name: activity.activityName,
-        description: activity.reason || activity.evidenceSummary,
+        id: `${slugify(activity.placeName || activity.activityName)}-${index}`,
+        name: displayActivityTitle(activity),
+        description: professionalRecommendationSummary(activity),
         time: null,
         location:
           typeof activity.location?.latitude === "number" &&
@@ -1122,9 +1166,9 @@ function mapDiscoveryActivities(response: DiscoveryResponse) {
 
 function mapActivityCandidates(candidates: ActivityCandidate[]) {
   return candidates.map((candidate, index) => ({
-    id: `${slugify(candidate.name)}-${index}`,
-    name: candidate.name,
-    description: candidate.description,
+    id: `${slugify(candidate.locationHint || candidate.name)}-${index}`,
+    name: cleanActivityTitle(candidate.locationHint || candidate.name),
+    description: professionalCandidateSummary(candidate),
     time: null,
     location: null,
     price: 0,
@@ -1137,6 +1181,65 @@ function mapActivityCandidates(candidates: ActivityCandidate[]) {
     rating: null,
     needsVerification: candidate.needsVerification,
   }));
+}
+
+function displayActivityTitle(activity: DiscoveredActivity) {
+  return cleanActivityTitle(activity.placeName || activity.activityName);
+}
+
+function cleanActivityTitle(value: string) {
+  return (
+    value
+      .replace(/^\s*(try|visit|go to|check out|stop by|eat at|drink at)\s+/i, "")
+      .replace(/^\s*(food stop|bubble tea stop|bakery stop|dessert stop)\s+(at|in)\s+/i, "")
+      .replace(/^\s*(outdoor hangout|walk|visit attraction)\s+(at|in)\s+/i, "")
+      .replace(/\s+/g, " ")
+      .trim() || "Recommended stop"
+  );
+}
+
+function professionalRecommendationSummary(activity: DiscoveredActivity) {
+  const tags = activity.tags
+    .map((tag) => tag.replace(/[-_]/g, " ").toLowerCase())
+    .filter((tag) => !["local business"].includes(tag))
+    .slice(0, 3);
+  const qualities = tags.length > 0 ? formatQualities(tags) : "a strong fit";
+  const rating =
+    typeof activity.rating === "number"
+      ? ` It has a ${activity.rating.toFixed(1)} star rating${
+          activity.reviewCount ? ` across ${activity.reviewCount} reviews` : ""
+        }.`
+      : "";
+  const location = activity.location?.label
+    ? ` near ${activity.location.label}`
+    : "";
+  const match = Math.round(
+    (activity.preferenceMatchScore || activity.confidenceScore || 0.5) * 100,
+  );
+
+  return `Recommended${location} for ${qualities}, with a ${match}% match to your trip preferences.${rating}`;
+}
+
+function professionalCandidateSummary(candidate: ActivityCandidate) {
+  const tags = candidate.tags
+    .map((tag) => tag.replace(/[-_]/g, " ").toLowerCase())
+    .slice(0, 3);
+  const qualities = tags.length > 0 ? formatQualities(tags) : "your trip preferences";
+  const confidence = Math.round(candidate.confidence * 100);
+
+  return `Recommended for ${qualities}, with a ${confidence}% match to your trip preferences.`;
+}
+
+function formatQualities(values: string[]) {
+  if (values.length <= 1) {
+    return values[0] ?? "";
+  }
+
+  if (values.length === 2) {
+    return `${values[0]} and ${values[1]}`;
+  }
+
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
 }
 
 function sortActivitiesByRating(activities: ActivityOption[]) {
@@ -1245,26 +1348,6 @@ function ActivityOptionRow({
       </div>
       <div className="flex flex-col gap-2 text-sm font-semibold text-[#202923] md:items-end">
         <span>{activity.priceLabel}</span>
-        {activity.sourceUrls.length > 0 && (
-          <div className="flex flex-wrap gap-2 md:justify-end">
-            {activity.sourceUrls.slice(0, 2).map((url, index) => (
-              <a
-                className="text-xs font-bold text-[#346b55] underline-offset-4 hover:underline"
-                href={url}
-                key={url}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Source {index + 1}
-              </a>
-            ))}
-            {activity.sourceUrls.length > 2 && (
-              <span className="text-xs text-[#718077]">
-                +{activity.sourceUrls.length - 2}
-              </span>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
